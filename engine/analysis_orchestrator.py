@@ -332,26 +332,100 @@ class AnalysisOrchestrator:
         return signals
 
 
+    # Signals that represent an active directional trade
+    _TRADE_SIGNALS = {"BUY", "STRONG_BUY", "SELL", "STRONG_SELL"}
+
+    @staticmethod
+    def _signal_direction(signal_str: str) -> str | None:
+        s = str(signal_str).upper()
+        if s in ("BUY", "STRONG_BUY"):
+            return "BUY"
+        if s in ("SELL", "STRONG_SELL"):
+            return "SELL"
+        return None
+
     def log_signal(self, bundle: AnalysisBundle):
-        payload = {
-            "symbol": bundle.signal.symbol,
-            "timeframe": bundle.signal.timeframe,
-            "feed_source": bundle.signal.feed_source,
-            "candle_timestamp": bundle.signal.candle_timestamp,
-            "signal": bundle.signal.signal,
-            "confidence": bundle.signal.confidence,
-            "entry": bundle.signal.entry,
-            "stop_loss": bundle.signal.stop_loss,
-            "tp1": bundle.signal.tp1,
-            "tp2": bundle.signal.tp2,
-            "rr_ratio": bundle.signal.rr_ratio,
-            "reasons": bundle.signal.reasons,
-            "warnings": bundle.signal.warnings,
-            "chart_sync": bundle.signal.chart_sync,
-            "trade_payload": bundle.trade_payload,
-        }
-        # Skip if this exact signal for this candle was already saved
-        if self.signal_repository.is_duplicate(payload):
+        """Manage the full position lifecycle for trade history.
+
+        Rules
+        -----
+        1. Only BUY / STRONG_BUY / SELL / STRONG_SELL signals are ever logged.
+        2. One active position per symbol at a time — no duplicates.
+        3. On every refresh, check whether the current price has hit the SL or
+           TP of the open position and close it with the correct outcome.
+        4. If the signal direction flips *before* SL/TP is hit, close the old
+           position as CLOSED_BY_SIGNAL_CHANGE and open the new one.
+        5. If the direction stays the same, do nothing (the existing entry
+           stays open — no duplicate is created).
+        """
+        new_signal = bundle.signal.signal
+        symbol     = bundle.signal.symbol
+
+        # Rule 1: only process real directional signals
+        if new_signal not in self._TRADE_SIGNALS:
             return
+
+        new_dir = self._signal_direction(new_signal)
+
+        # Current market price from the latest closed candle
+        try:
+            current_price = float(bundle.candles["close"].iloc[-1])
+        except Exception:
+            current_price = None
+
+        # ── Step A: Check SL / TP on the existing open position ──────────
+        active = self.signal_repository.get_active_position(symbol)
+
+        if active is not None:
+            active_sl  = float(active.get("stop_loss") or 0)
+            active_tp1 = float(active.get("tp1") or 0)
+            active_dir = self._signal_direction(active.get("signal", ""))
+            logged_at  = active.get("logged_at", "")
+
+            if current_price is not None and active_sl and active_tp1:
+                if active_dir == "BUY":
+                    sl_hit = current_price <= active_sl
+                    tp_hit = current_price >= active_tp1
+                else:  # SELL
+                    sl_hit = current_price >= active_sl
+                    tp_hit = current_price <= active_tp1
+
+                if sl_hit:
+                    self.signal_repository.close_position(logged_at, "SL_HIT")
+                    active = None  # position is now closed
+                elif tp_hit:
+                    self.signal_repository.close_position(logged_at, "TP_HIT")
+                    active = None  # position is now closed
+
+        # ── Step B: Evaluate the new signal against the (still open) position ──
+        if active is not None:
+            active_dir = self._signal_direction(active.get("signal", ""))
+            logged_at  = active.get("logged_at", "")
+
+            if active_dir == new_dir:
+                # Rule 5: same direction — position still live, do nothing
+                return
+
+            # Rule 4: direction changed before SL/TP → close old, open new
+            self.signal_repository.close_position(logged_at, "CLOSED_BY_SIGNAL_CHANGE")
+
+        # ── Step C: Open the new position ────────────────────────────────
+        payload = {
+            "symbol":            symbol,
+            "timeframe":         bundle.signal.timeframe,
+            "feed_source":       bundle.signal.feed_source,
+            "candle_timestamp":  bundle.signal.candle_timestamp,
+            "signal":            new_signal,
+            "confidence":        bundle.signal.confidence,
+            "entry":             bundle.signal.entry,
+            "stop_loss":         bundle.signal.stop_loss,
+            "tp1":               bundle.signal.tp1,
+            "tp2":               bundle.signal.tp2,
+            "rr_ratio":          bundle.signal.rr_ratio,
+            "reasons":           bundle.signal.reasons,
+            "warnings":          bundle.signal.warnings,
+            "chart_sync":        bundle.signal.chart_sync,
+            "trade_payload":     bundle.trade_payload,
+        }
         self.signal_repository.append(payload)
 

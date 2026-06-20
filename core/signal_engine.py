@@ -29,6 +29,40 @@ def candle_pattern(df):
     if len(df) < 2:
         return None
 
+    # Check 3-candle continuation patterns first
+    if len(df) >= 3:
+        c1 = df.iloc[-3]
+        c2 = df.iloc[-2]
+        c3 = df.iloc[-1]
+        
+        # Three White Soldiers
+        if (c1["close"] > c1["open"] and 
+            c2["close"] > c2["open"] and 
+            c3["close"] > c3["open"]):
+            if c3["close"] > c2["close"] > c1["close"]:
+                if (c1["open"] <= c2["open"] <= c1["close"] and 
+                    c2["open"] <= c3["open"] <= c2["close"]):
+                    body2 = c2["close"] - c2["open"]
+                    body3 = c3["close"] - c3["open"]
+                    upper_wick2 = c2["high"] - c2["close"]
+                    upper_wick3 = c3["high"] - c3["close"]
+                    if upper_wick2 < body2 * 0.3 and upper_wick3 < body3 * 0.3:
+                        return "three_white_soldiers"
+                        
+        # Three Black Crows
+        if (c1["close"] < c1["open"] and 
+            c2["close"] < c2["open"] and 
+            c3["close"] < c3["open"]):
+            if c3["close"] < c2["close"] < c1["close"]:
+                if (c1["close"] <= c2["open"] <= c1["open"] and 
+                    c2["close"] <= c3["open"] <= c2["open"]):
+                    body2 = c2["open"] - c2["close"]
+                    body3 = c3["open"] - c3["close"]
+                    lower_wick2 = c2["close"] - c2["low"]
+                    lower_wick3 = c3["close"] - c3["low"]
+                    if lower_wick2 < body2 * 0.3 and lower_wick3 < body3 * 0.3:
+                        return "three_black_crows"
+
     previous = df.iloc[-2]
     current = df.iloc[-1]
     body = abs(current["close"] - current["open"])
@@ -116,12 +150,12 @@ def _score_single_timeframe(candles):
         bearish_score += 10
         reasons.append("Buy-side liquidity sweep and rejection detected")
 
-    if pattern in ["bullish_engulfing", "hammer"]:
+    if pattern in ["bullish_engulfing", "hammer", "three_white_soldiers"]:
         bullish_score += 10
-        reasons.append(f"Bullish candle confirmation: {pattern.replace('_', ' ')}")
-    elif pattern in ["bearish_engulfing", "shooting_star"]:
+        reasons.append(f"Bullish candle confirmation: {pattern.replace('_', ' ').title()}")
+    elif pattern in ["bearish_engulfing", "shooting_star", "three_black_crows"]:
         bearish_score += 10
-        reasons.append(f"Bearish candle confirmation: {pattern.replace('_', ' ')}")
+        reasons.append(f"Bearish candle confirmation: {pattern.replace('_', ' ').title()}")
     elif pattern == "doji":
         warnings.append("Doji candle shows indecision")
 

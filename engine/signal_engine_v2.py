@@ -1,6 +1,7 @@
 from core.risk import MIN_RISK_REWARD, build_trade_plan, fibonacci_levels
 from engine.models import SignalDecision
 from config import MIN_CONFIRMATION_CONFIDENCE
+from core.signal_engine import candle_pattern
 
 
 class SignalEngineV2:
@@ -87,6 +88,19 @@ class SignalEngineV2:
             bearish += 5
             confidence_breakdown["rsi"] = 5
             reasons.append("RSI indicates overbought exhaustion risk")
+
+        pattern = candle_pattern(candles)
+        if pattern:
+            if pattern in ["bullish_engulfing", "hammer", "three_white_soldiers"]:
+                bullish += 10
+                confidence_breakdown["candle_pattern"] = 10
+                reasons.append(f"Bullish candle confirmation: {pattern.replace('_', ' ').title()}")
+            elif pattern in ["bearish_engulfing", "shooting_star", "three_black_crows"]:
+                bearish += 10
+                confidence_breakdown["candle_pattern"] = 10
+                reasons.append(f"Bearish candle confirmation: {pattern.replace('_', ' ').title()}")
+            elif pattern == "doji":
+                warnings.append("Doji candle shows indecision")
 
         strongest_support = max(zone_supports, key=lambda z: z.strength) if zone_supports else None
         strongest_resistance = max(zone_resistances, key=lambda z: z.strength) if zone_resistances else None

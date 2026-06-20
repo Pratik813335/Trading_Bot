@@ -85,28 +85,111 @@ def nearest_zone(zones, zone_type, price, below=True):
 
 
 def detect_bos(df):
-    if len(df) < 10:
+    """
+    SMC-grade Break of Structure detection.
+
+    A valid BOS requires:
+    1. At least one confirmed swing high / swing low in the lookback window.
+    2. The most-recent *closed* candle's close decisively breaks beyond that
+       structural level (not just a wick poke).
+    3. The breakout displacement is at least a fraction of ATR14 so micro-noise
+       is filtered out.
+
+    Returns:
+        'bullish_bos'  – close broke above last significant swing high
+        'bearish_bos'  – close broke below last significant swing low
+        None           – no clean BOS found
+    """
+    min_bars = 15
+    if len(df) < min_bars:
         return None
 
-    previous_high = df["high"].iloc[-10:-1].max()
-    previous_low = df["low"].iloc[-10:-1].min()
-    last = df.iloc[-1]
-    if last["close"] > previous_high:
-        return "bullish_bos"
-    if last["close"] < previous_low:
-        return "bearish_bos"
+    # ATR-based displacement threshold (at least 10 % of ATR14)
+    atr = float(df["atr14"].iloc[-1]) if "atr14" in df.columns else 0.0
+    if atr <= 0:
+        atr = float((df["high"].tail(14).max() - df["low"].tail(14).min()) / 14)
+    min_displacement = atr * 0.10
+
+    # Collect confirmed swing highs and lows in a 50-bar lookback window
+    # (exclude the last candle so we measure the break from a prior structure)
+    lookback = df.iloc[-(min(50, len(df))):-1].reset_index(drop=True)
+    swings = find_swings(lookback, lookback=2)
+
+    swing_highs = sorted([s for s in swings if s["type"] == "high"], key=lambda s: s["index"])
+    swing_lows  = sorted([s for s in swings if s["type"] == "low"],  key=lambda s: s["index"])
+
+    last_close = float(df["close"].iloc[-1])
+
+    # --- Bullish BOS: close breaks above the most recent confirmed swing high ---
+    if swing_highs:
+        # Use the most recent swing high as the structural level
+        key_level_high = float(swing_highs[-1]["price"])
+        if last_close > key_level_high + min_displacement:
+            return "bullish_bos"
+
+    # --- Bearish BOS: close breaks below the most recent confirmed swing low ---
+    if swing_lows:
+        key_level_low = float(swing_lows[-1]["price"])
+        if last_close < key_level_low - min_displacement:
+            return "bearish_bos"
+
     return None
 
 
 def detect_liquidity(df):
-    if len(df) < 5:
+    """
+    SMC-grade Liquidity Sweep (Stop Hunt) detection.
+
+    A liquidity sweep requires:
+    1. A confirmed swing high or swing low in recent price history (the pool of
+       liquidity — stops cluster above highs / below lows).
+    2. The current candle's *wick* pierces that level (engineered stop run).
+    3. The candle *closes back* on the other side of that level (rejection /
+       reclaim), confirming smart money absorbed the stops.
+    4. The wick extension beyond the level is at least 15 % of ATR14 to avoid
+       micro-noise triggers.
+
+    Returns:
+        'liquidity_grab_buy'   – sell-side sweep → bullish continuation expected
+        'liquidity_grab_sell'  – buy-side sweep  → bearish continuation expected
+        None                   – no sweep detected
+    """
+    min_bars = 10
+    if len(df) < min_bars:
         return None
 
-    previous_high = df["high"].iloc[-5:-1].max()
-    previous_low = df["low"].iloc[-5:-1].min()
+    # ATR filter
+    atr = float(df["atr14"].iloc[-1]) if "atr14" in df.columns else 0.0
+    if atr <= 0:
+        atr = float((df["high"].tail(14).max() - df["low"].tail(14).min()) / 14)
+    min_wick = atr * 0.15
+
+    # Scan multiple lookback windows for robustness: 5, 10, 20 bars
     current = df.iloc[-1]
-    if current["high"] > previous_high and current["close"] < previous_high:
-        return "liquidity_grab_sell"
-    if current["low"] < previous_low and current["close"] > previous_low:
-        return "liquidity_grab_buy"
+    cur_high  = float(current["high"])
+    cur_low   = float(current["low"])
+    cur_close = float(current["close"])
+
+    for window_size in [5, 10, 20]:
+        window = df.iloc[-(window_size + 1):-1]   # exclude current candle
+        if window.empty:
+            continue
+
+        prior_high = float(window["high"].max())
+        prior_low  = float(window["low"].min())
+
+        # --- Sell-side liquidity sweep (below swing lows) → bullish reversal ---
+        # Wick pierces below prior_low AND close reclaims above prior_low
+        if cur_low < prior_low and cur_close > prior_low:
+            wick_extension = prior_low - cur_low
+            if wick_extension >= min_wick:
+                return "liquidity_grab_buy"
+
+        # --- Buy-side liquidity sweep (above swing highs) → bearish reversal ---
+        # Wick pierces above prior_high AND close falls back below prior_high
+        if cur_high > prior_high and cur_close < prior_high:
+            wick_extension = cur_high - prior_high
+            if wick_extension >= min_wick:
+                return "liquidity_grab_sell"
+
     return None

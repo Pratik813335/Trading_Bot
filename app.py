@@ -4,6 +4,19 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+import importlib
+import storage.signal_repository_v2
+import engine.analysis_orchestrator
+import engine.signal_engine_v2
+import core.signal_engine
+import backend.service_container
+
+importlib.reload(storage.signal_repository_v2)
+importlib.reload(engine.signal_engine_v2)
+importlib.reload(core.signal_engine)
+importlib.reload(engine.analysis_orchestrator)
+importlib.reload(backend.service_container)
+
 from backend.service_container import build_container
 from core.signal_engine import candle_pattern
 
@@ -243,8 +256,9 @@ def build_trade_panel_payload(bundle):
     actionable = (bundle.signal.signal in ["BUY", "SELL", "STRONG_BUY", "STRONG_SELL"] 
                   and bundle.signal.stop_loss not in [None, 0, 0.0] 
                   and not has_mismatch)
-    show_levels = bundle.signal.stop_loss not in [None, 0, 0.0] and bundle.signal.entry not in [None, 0, 0.0]
+    show_levels = actionable and bundle.signal.entry not in [None, 0, 0.0]
     status = "Approved" if actionable else ("Blocked / Feed Mismatch" if has_mismatch else "Blocked / No Trade")
+    reasons = [r for r in (bundle.signal.reasons or []) if not r.startswith("Gemini:")]
     return {
         "symbol": bundle.signal.symbol,
         "timeframe": bundle.signal.timeframe,
@@ -264,6 +278,7 @@ def build_trade_panel_payload(bundle):
         "warnings": bundle.signal.warnings[:4],
         "sync": f"{bundle.sync.match_percentage}%",
         "actionable": actionable,
+        "reasons": reasons,
     }
 
 
@@ -303,14 +318,19 @@ def build_chart_draw_payload(bundle):
         )
 
     levels = []
-    for label, value, color in [
-        ("ENTRY", overlays.get("entry"), "#2563eb"),
-        ("SL", overlays.get("stop_loss"), "#dc2626"),
-        ("TP1", overlays.get("tp1"), "#16a34a"),
-        ("TP2", overlays.get("tp2"), "#166534"),
-    ]:
-        if value not in [None, 0, 0.0, ""]:
-            levels.append({"title": label, "value": float(value), "color": color})
+    has_mismatch = any("Feed mismatch" in w or "mismatch" in w.lower() for w in bundle.signal.warnings)
+    actionable = (bundle.signal.signal in ["BUY", "SELL", "STRONG_BUY", "STRONG_SELL"] 
+                  and bundle.signal.stop_loss not in [None, 0, 0.0] 
+                  and not has_mismatch)
+    if actionable:
+        for label, value, color in [
+            ("ENTRY", overlays.get("entry"), "#2563eb"),
+            ("SL", overlays.get("stop_loss"), "#dc2626"),
+            ("TP1", overlays.get("tp1"), "#16a34a"),
+            ("TP2", overlays.get("tp2"), "#166534"),
+        ]:
+            if value not in [None, 0, 0.0, ""]:
+                levels.append({"title": label, "value": float(value), "color": color})
 
     # Filter support_resistance and imbalances based on active signal confluences / reasons
     sr_zones = overlays.get("support_resistance") or []
@@ -1253,7 +1273,7 @@ def render_tradingview_widget(symbol, timeframe, bundle):
             symbol: "{tv_symbol}",
             interval: "{tv_interval}",
             timezone: "Asia/Kolkata",
-            theme: "light",
+            theme: "dark",
             style: "1",
             locale: "en",
             withdateranges: true,
@@ -1346,20 +1366,60 @@ def render_tradingview_widget(symbol, timeframe, bundle):
     components.html(html, height=768)
 
 
+def _conf_gauge_html(confidence: float, height: str = "8px", font_size: str = "13px") -> str:
+    """Return an animated confidence bar + numeric label as raw HTML."""
+    pct   = min(max(float(confidence), 0), 100)
+    color = ("#16a34a" if pct >= 70 else ("#f59e0b" if pct >= 45 else "#dc2626"))
+    label_color = color
+    return f"""
+    <div style='display:flex;align-items:center;gap:8px;'>
+      <div style='flex:1;background:rgba(148,163,184,0.18);border-radius:999px;height:{height};overflow:hidden;'>
+        <div style='width:{pct:.1f}%;height:100%;background:{color};border-radius:999px;
+                    transition:width 0.6s cubic-bezier(.4,0,.2,1);'></div>
+      </div>
+      <span style='font-size:{font_size};font-weight:800;color:{label_color};min-width:42px;text-align:right;'>{pct:.1f}%</span>
+    </div>
+    """
+
+
 def render_metric_strip(bundle):
-    structure = bundle.chart_payload.get("overlays", {}).get("structure", {})
-    metrics = [
-        ("Signal", bundle.signal.signal),
-        ("Confidence", f"{bundle.signal.confidence:.2f}%"),
-        ("Trend", structure.get("trend", "n/a")),
-        ("Phase", structure.get("phase", "n/a")),
-        ("Sync", f"{bundle.sync.match_percentage}%"),
-        ("BOS / CHOCH", f"{structure.get('bos') or 'none'} / {structure.get('choch') or 'none'}"),
+    structure  = bundle.chart_payload.get("overlays", {}).get("structure", {})
+    conf       = float(bundle.signal.confidence)
+    conf_color = "#16a34a" if conf >= 70 else ("#f59e0b" if conf >= 45 else "#dc2626")
+    conf_pct   = min(max(conf, 0), 100)
+
+    signal_val = bundle.signal.signal
+    sig_color  = {"BUY": "#16a34a", "STRONG_BUY": "#15803d",
+                  "SELL": "#dc2626", "STRONG_SELL": "#b91c1c"}.get(signal_val, "#475569")
+
+    trend_val  = structure.get("trend", "n/a")
+    trend_col  = "#16a34a" if trend_val == "bullish" else ("#dc2626" if trend_val == "bearish" else "#64748b")
+    sync_val   = bundle.sync.match_percentage
+    sync_col   = "#16a34a" if sync_val >= 80 else ("#f59e0b" if sync_val >= 50 else "#dc2626")
+
+    # Build the confidence gauge cell separately
+    conf_gauge = f"""
+    <div class="metric-card" style='min-width:220px;'>
+      <div class="metric-label">Confidence</div>
+      <div style='margin-top:6px;'>
+        <div style='background:rgba(148,163,184,0.18);border-radius:999px;height:10px;overflow:hidden;'>
+          <div style='width:{conf_pct:.1f}%;height:100%;background:{conf_color};border-radius:999px;
+                      transition:width 0.6s cubic-bezier(.4,0,.2,1);'></div>
+        </div>
+        <div style='margin-top:5px;font-size:20px;font-weight:900;color:{conf_color};letter-spacing:-.5px;'>{conf_pct:.1f}%</div>
+      </div>
+    </div>
+    """
+
+    other_cards = [
+        f'<div class="metric-card"><div class="metric-label">Signal</div><div class="metric-value" style="color:{sig_color};">{signal_val}</div></div>',
+        conf_gauge,
+        f'<div class="metric-card"><div class="metric-label">Trend</div><div class="metric-value" style="color:{trend_col};">{trend_val.upper() if trend_val != "n/a" else "N/A"}</div></div>',
+        f'<div class="metric-card"><div class="metric-label">Phase</div><div class="metric-value">{structure.get("phase", "n/a").title()}</div></div>',
+        f'<div class="metric-card"><div class="metric-label">Sync</div><div class="metric-value" style="color:{sync_col};">{sync_val}%</div></div>',
+        f'<div class="metric-card"><div class="metric-label">BOS / CHOCH</div><div class="metric-value" style="font-size:12px;">{structure.get("bos") or "none"} / {structure.get("choch") or "none"}</div></div>',
     ]
-    cards = []
-    for label, value in metrics:
-        cards.append(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>')
-    st.markdown(f'<div class="metric-strip">{"".join(cards)}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="metric-strip">{"".join(other_cards)}</div>', unsafe_allow_html=True)
 
 
 def build_structure_tables(bundle):
@@ -1442,8 +1502,8 @@ if bundle is None:
 render_section_header("Chart Workspace", "Live interactive trading chart with AI analysis panel — signal, entry, SL, TP and structure overlaid in real time.")
 render_metric_strip(bundle)
 
-# Render TradingView Live Chart with drawings
-render_lightweight_chart(st.session_state.analysis_symbol, st.session_state.analysis_timeframe, bundle)
+# Render TradingView Live Chart Widget
+render_tradingview_widget(st.session_state.analysis_symbol, st.session_state.analysis_timeframe, bundle)
 
 overview_tab, structure_tab, sessions_tab, news_tab, history_tab = st.tabs(
     ["📊 Overview", "🏗️ Structure Logic", "🌍 Sessions", "📰 News Intel", "📜 Trade History"]
@@ -1454,7 +1514,7 @@ with overview_tab:
     approved_trade = (bundle.signal.signal in ["BUY", "SELL", "STRONG_BUY", "STRONG_SELL"]
                       and bundle.signal.stop_loss not in [None, 0, 0.0]
                       and not has_mismatch)
-    show_levels = bundle.signal.stop_loss not in [None, 0, 0.0] and bundle.signal.entry not in [None, 0, 0.0]
+    show_levels = approved_trade and bundle.signal.entry not in [None, 0, 0.0]
 
     # Status banner
     if approved_trade:
@@ -1500,9 +1560,9 @@ with overview_tab:
             <div style='font-size:11px;color:#64748b;margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em;'>Signal</div>
             <div style='font-size:17px;font-weight:800;color:{signal_color};'>{bundle.signal.signal}</div>
           </div>
-          <div style='padding:12px;border-radius:14px;background:rgba(15,23,42,0.05);border:1px solid rgba(148,163,184,0.2);'>
-            <div style='font-size:11px;color:#64748b;margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em;'>Confidence</div>
-            <div style='font-size:17px;font-weight:800;color:#0f172a;'>{bundle.signal.confidence:.1f}%</div>
+          <div style='padding:12px;border-radius:14px;background:rgba(15,23,42,0.05);border:1px solid rgba(148,163,184,0.2);grid-column:span 2;'>
+            <div style='font-size:11px;color:#64748b;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em;'>Confidence</div>
+            {_conf_gauge_html(bundle.signal.confidence, height='12px', font_size='18px')}
           </div>
           <div style='padding:12px;border-radius:14px;background:rgba(15,23,42,0.05);border:1px solid rgba(148,163,184,0.2);'>
             <div style='font-size:11px;color:#64748b;margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em;'>Symbol</div>
@@ -2050,7 +2110,7 @@ with history_tab:
 
     all_records = signal_repository.read_recent(limit=500)
 
-    # ── Only show real trade signals (BUY / SELL / STRONG_BUY / STRONG_SELL) ──
+    # Only show real directional trade signals
     trade_records = [
         r for r in all_records
         if r.get("signal") in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]
@@ -2059,12 +2119,11 @@ with history_tab:
     if not trade_records:
         st.info("No trade signals recorded yet. Run an analysis to start logging BUY/SELL signals.")
     else:
-        # ── Outcome counters (from stored outcome field if present) ────────
+        # ── Counters ──────────────────────────────────────────────────────
         tp_hit_count  = sum(1 for r in trade_records if r.get("outcome") == "TP_HIT")
         sl_hit_count  = sum(1 for r in trade_records if r.get("outcome") == "SL_HIT")
-        pending_count = len(trade_records) - tp_hit_count - sl_hit_count
-        buy_count     = sum(1 for r in trade_records if r.get("signal") in ["BUY", "STRONG_BUY"])
-        sell_count    = sum(1 for r in trade_records if r.get("signal") in ["SELL", "STRONG_SELL"])
+        changed_count = sum(1 for r in trade_records if r.get("outcome") == "CLOSED_BY_SIGNAL_CHANGE")
+        open_count    = sum(1 for r in trade_records if r.get("outcome") in (None, "", "OPEN"))
         total_trades  = len(trade_records)
         resolved      = tp_hit_count + sl_hit_count
         success_rate  = (tp_hit_count / resolved * 100) if resolved > 0 else None
@@ -2074,76 +2133,103 @@ with history_tab:
         success_color   = "#15803d" if (success_rate or 0) >= 50 else "#b91c1c"
         if success_rate is None:
             success_color = "#7c3aed"
+        _sr_rgb = ("22,163,74" if (success_rate or 0) >= 50
+                   else ("220,38,38" if success_rate is not None else "124,58,237"))
 
         stat_html = f"""
-        <div style='display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:1.2rem;'>
-          <div style='padding:16px;border-radius:18px;background:linear-gradient(135deg,rgba(37,99,235,0.12),rgba(37,99,235,0.04));border:1px solid rgba(37,99,235,0.3);text-align:center;'>
-            <div style='font-size:10px;color:#3b82f6;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-weight:700;'>Total Trades</div>
-            <div style='font-size:28px;font-weight:800;color:#1d4ed8;'>{total_trades}</div>
+        <div style='display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:1.2rem;'>
+          <div style='padding:14px;border-radius:18px;background:linear-gradient(135deg,rgba(37,99,235,0.12),rgba(37,99,235,0.04));border:1px solid rgba(37,99,235,0.3);text-align:center;'>
+            <div style='font-size:10px;color:#3b82f6;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-weight:700;'>Total</div>
+            <div style='font-size:26px;font-weight:800;color:#1d4ed8;'>{total_trades}</div>
           </div>
-          <div style='padding:16px;border-radius:18px;background:linear-gradient(135deg,rgba(22,163,74,0.12),rgba(22,163,74,0.04));border:1px solid rgba(22,163,74,0.3);text-align:center;'>
-            <div style='font-size:10px;color:#16a34a;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-weight:700;'>Buy Signals</div>
-            <div style='font-size:28px;font-weight:800;color:#15803d;'>{buy_count}</div>
+          <div style='padding:14px;border-radius:18px;background:linear-gradient(135deg,rgba(124,58,237,0.12),rgba(124,58,237,0.04));border:1px solid rgba(124,58,237,0.3);text-align:center;'>
+            <div style='font-size:10px;color:#7c3aed;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-weight:700;'>🔵 Active</div>
+            <div style='font-size:26px;font-weight:800;color:#6d28d9;'>{open_count}</div>
           </div>
-          <div style='padding:16px;border-radius:18px;background:linear-gradient(135deg,rgba(220,38,38,0.12),rgba(220,38,38,0.04));border:1px solid rgba(220,38,38,0.3);text-align:center;'>
-            <div style='font-size:10px;color:#dc2626;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-weight:700;'>Sell Signals</div>
-            <div style='font-size:28px;font-weight:800;color:#b91c1c;'>{sell_count}</div>
+          <div style='padding:14px;border-radius:18px;background:linear-gradient(135deg,rgba(22,163,74,0.12),rgba(22,163,74,0.04));border:1px solid rgba(22,163,74,0.3);text-align:center;'>
+            <div style='font-size:10px;color:#16a34a;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-weight:700;'>✅ TP Hit</div>
+            <div style='font-size:26px;font-weight:800;color:#15803d;'>{tp_hit_count}</div>
           </div>
-          <div style='padding:16px;border-radius:18px;background:linear-gradient(135deg,rgba({"22,163,74" if success_rate is not None and success_rate>=50 else ("220,38,38" if success_rate is not None else "124,58,237")},0.12),rgba({"22,163,74" if success_rate is not None and success_rate>=50 else ("220,38,38" if success_rate is not None else "124,58,237")},0.04));border:1px solid rgba({"22,163,74" if success_rate is not None and success_rate>=50 else ("220,38,38" if success_rate is not None else "124,58,237")},0.3);text-align:center;'>
-            <div style='font-size:10px;color:{success_color};text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-weight:700;'>Success Rate</div>
-            <div style='font-size:28px;font-weight:800;color:{success_color};'>{success_display}</div>
+          <div style='padding:14px;border-radius:18px;background:linear-gradient(135deg,rgba(220,38,38,0.12),rgba(220,38,38,0.04));border:1px solid rgba(220,38,38,0.3);text-align:center;'>
+            <div style='font-size:10px;color:#dc2626;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-weight:700;'>❌ SL Hit</div>
+            <div style='font-size:26px;font-weight:800;color:#b91c1c;'>{sl_hit_count}</div>
           </div>
-          <div style='padding:16px;border-radius:18px;background:linear-gradient(135deg,rgba(124,58,237,0.12),rgba(124,58,237,0.04));border:1px solid rgba(124,58,237,0.3);text-align:center;'>
-            <div style='font-size:10px;color:#7c3aed;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-weight:700;'>Avg Confidence</div>
-            <div style='font-size:28px;font-weight:800;color:#6d28d9;'>{avg_conf:.1f}%</div>
+          <div style='padding:14px;border-radius:18px;background:linear-gradient(135deg,rgba(245,158,11,0.12),rgba(245,158,11,0.04));border:1px solid rgba(245,158,11,0.3);text-align:center;'>
+            <div style='font-size:10px;color:#d97706;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-weight:700;'>🔄 Changed</div>
+            <div style='font-size:26px;font-weight:800;color:#b45309;'>{changed_count}</div>
+          </div>
+          <div style='padding:14px;border-radius:18px;background:linear-gradient(135deg,rgba({_sr_rgb},0.12),rgba({_sr_rgb},0.04));border:1px solid rgba({_sr_rgb},0.3);text-align:center;'>
+            <div style='font-size:10px;color:{success_color};text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-weight:700;'>Win Rate</div>
+            <div style='font-size:26px;font-weight:800;color:{success_color};'>{success_display}</div>
           </div>
         </div>
+        <div style='font-size:12px;color:#64748b;margin-top:4px;'>Avg Confidence: <b>{avg_conf:.1f}%</b></div>
         """
         render_content_card("Trade Performance Summary", stat_html)
 
-        # ── Build rows — trade signals only, no NO_TRADE ─────────────────
+        # ── Build table rows ──────────────────────────────────────────────
         rows = []
         for r in trade_records:
-            raw_ts = r.get("logged_at", "")
+            # Opened timestamp
+            raw_open = r.get("logged_at", "")
             try:
-                ts = _dt.datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
-                dt_str = ts.strftime("%Y-%m-%d %H:%M UTC")
+                open_dt  = _dt.datetime.fromisoformat(raw_open.replace("Z", "+00:00"))
+                open_str = open_dt.strftime("%Y-%m-%d %H:%M UTC")
             except Exception:
-                dt_str = raw_ts[:16] if len(raw_ts) >= 16 else (raw_ts or "--")
+                open_str = raw_open[:16] if len(raw_open) >= 16 else (raw_open or "--")
+                open_dt  = None
+
+            # Closed timestamp & duration
+            raw_close = r.get("closed_at", "")
+            if raw_close:
+                try:
+                    close_dt  = _dt.datetime.fromisoformat(raw_close.replace("Z", "+00:00"))
+                    close_str = close_dt.strftime("%Y-%m-%d %H:%M UTC")
+                    if open_dt:
+                        total_min    = int((close_dt - open_dt).total_seconds() // 60)
+                        duration_str = (f"{total_min // 60}h {total_min % 60}m"
+                                        if total_min >= 60 else f"{total_min}m")
+                    else:
+                        duration_str = "--"
+                except Exception:
+                    close_str    = raw_close[:16] if len(raw_close) >= 16 else "--"
+                    duration_str = "--"
+            else:
+                close_str    = "—"
+                duration_str = "Active"
+
+            # Status
+            outcome    = r.get("outcome", "OPEN") or "OPEN"
+            status_map = {
+                "OPEN":                    "🔵 Active",
+                "TP_HIT":                  "✅ TP Hit",
+                "SL_HIT":                  "❌ SL Hit",
+                "CLOSED_BY_SIGNAL_CHANGE": "🔄 Signal Changed",
+            }
+            status_str = status_map.get(outcome, f"⏳ {outcome}")
 
             sig    = r.get("signal", "--")
             conf   = float(r.get("confidence", 0) or 0)
             rr_val = r.get("rr_ratio") or 0
 
-            # Outcome: use stored outcome if present, otherwise Pending
-            outcome = r.get("outcome", "")  # "TP_HIT", "SL_HIT", or ""
-            if outcome == "TP_HIT":
-                sl_display = "—"
-                tp_display = "✅ Pass"
-            elif outcome == "SL_HIT":
-                sl_display = "❌ Fail"
-                tp_display = "—"
-            else:
-                sl_display = "⏳ Pending"
-                tp_display = "⏳ Pending"
-
             rows.append({
-                "Date & Time":  dt_str,
-                "Currency":     r.get("symbol", "--"),
-                "Trade":        sig,
-                "Confidence":   f"{conf:.1f}%",
-                "Entry":        format_price(r.get("entry")),
-                "Stop Loss":    format_price(r.get("stop_loss")),
-                "TP1":          format_price(r.get("tp1")),
-                "TP2":          format_price(r.get("tp2")),
-                "R : R":        f"{float(rr_val):.2f}" if rr_val else "--",
-                "SL Hit":       sl_display,
-                "TP Hit":       tp_display,
+                "Opened":     open_str,
+                "Closed":     close_str,
+                "Duration":   duration_str,
+                "Currency":   r.get("symbol", "--"),
+                "Trade":      sig,
+                "Confidence": f"{conf:.1f}%",
+                "Entry":      format_price(r.get("entry")),
+                "Stop Loss":  format_price(r.get("stop_loss")),
+                "TP1":        format_price(r.get("tp1")),
+                "TP2":        format_price(r.get("tp2")),
+                "R : R":      f"{float(rr_val):.2f}" if rr_val else "--",
+                "Status":     status_str,
             })
 
         hist_df = pd.DataFrame(rows)
 
-        # ── Style: colour Trade column + outcome columns ──────────────────
+        # ── Styling ───────────────────────────────────────────────────────
         _SIG_COLORS = {
             "BUY":         "color: #15803d; font-weight: 700",
             "STRONG_BUY":  "color: #166534; font-weight: 800",
@@ -2152,22 +2238,26 @@ with history_tab:
         }
 
         def _style_cell(val):
-            s = _SIG_COLORS.get(str(val), "")
-            if "Pass" in str(val):
-                s = "color: #15803d; font-weight: 700"
-            elif "Fail" in str(val):
-                s = "color: #b91c1c; font-weight: 700"
-            elif "Pending" in str(val):
-                s = "color: #7c3aed; font-weight: 600"
-            return s
+            v = str(val)
+            if v in _SIG_COLORS:
+                return _SIG_COLORS[v]
+            if "TP Hit" in v:
+                return "color: #15803d; font-weight: 700"
+            if "SL Hit" in v:
+                return "color: #b91c1c; font-weight: 700"
+            if "Active" in v:
+                return "color: #6d28d9; font-weight: 700"
+            if "Signal Changed" in v:
+                return "color: #b45309; font-weight: 700"
+            return ""
 
         try:
-            styled = hist_df.style.map(_style_cell, subset=["Trade", "SL Hit", "TP Hit"])
+            styled = hist_df.style.map(_style_cell, subset=["Trade", "Status"])
         except AttributeError:
-            styled = hist_df.style.applymap(_style_cell, subset=["Trade", "SL Hit", "TP Hit"])  # type: ignore[attr-defined]
+            styled = hist_df.style.applymap(_style_cell, subset=["Trade", "Status"])  # type: ignore[attr-defined]
 
         render_content_card(
-            f"📋 Trade Signal Log — {total_trades} trades (most recent first)",
-            f"TP Hit (Pass): {tp_hit_count} &nbsp;|&nbsp; SL Hit (Fail): {sl_hit_count} &nbsp;|&nbsp; Pending: {pending_count}"
+            f"📋 Trade Signal Log — {total_trades} position(s) · {open_count} active",
+            "One row per unique trade. Active positions stay open until SL/TP is hit or the signal direction flips."
         )
         st.dataframe(styled, use_container_width=True, height=540)
