@@ -1,0 +1,6 @@
+symbol=XAUUSD
+timeframe=5
+mt5_timeframe=M5
+objects=43
+csv=D:\Trading_Bot\storage\mt5_bridge\mt5_objects.csv
+payload=D:\Trading_Bot\storage\mt5_bridge\analysis_payload.json
