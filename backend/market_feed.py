@@ -40,6 +40,7 @@ OANDA_SYMBOLS = {
 }
 
 YAHOO_INTERVALS = {
+    "1": ("1m", "1d"),
     "5": ("5m", "5d"),
     "15": ("15m", "5d"),
     "30": ("30m", "1mo"),
@@ -49,6 +50,7 @@ YAHOO_INTERVALS = {
 }
 
 OANDA_GRANULARITIES = {
+    "1": "M1",
     "5": "M5",
     "15": "M15",
     "30": "M30",

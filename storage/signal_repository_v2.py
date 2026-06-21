@@ -69,7 +69,7 @@ class JsonlSignalRepository:
             return False
 
         # These are terminal states — do not overwrite them
-        _FINAL = {"TP_HIT", "SL_HIT", "CLOSED_BY_SIGNAL_CHANGE"}
+        _FINAL = {"TP_HIT", "SL_HIT", "CLOSED_BY_SIGNAL_CHANGE", "TRADE_REMOVED"}
 
         lines = self.path.read_text(encoding="utf-8").splitlines()
         updated = False

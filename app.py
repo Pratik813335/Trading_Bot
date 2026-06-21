@@ -21,8 +21,8 @@ from backend.service_container import build_container
 from core.signal_engine import candle_pattern
 
 
-SYMBOLS = ["XAUUSD", "EURUSD", "GBPUSD", "AUDUSD", "USDJPY", "USDCHF", "USDCAD"]
-TIMEFRAMES = ["5", "15", "30", "60", "240", "D"]
+SYMBOLS = ["XAUUSD", "EURUSD", "GBPUSD", "AUDUSD", "USDJPY", "BTCUSD", "USDCAD"]
+TIMEFRAMES = ["1", "5", "15", "30", "60", "240", "D"]
 
 
 def init_session_state():
@@ -66,12 +66,27 @@ def inject_styles():
             font-weight: 700;
             border: 1px solid #cbd5e1;
             box-shadow: 0 10px 25px rgba(15, 23, 42, 0.08);
+            transition: transform 0.1s ease, box-shadow 0.1s ease, background 0.15s ease, opacity 0.15s ease;
+        }
+
+        div[data-testid="stButton"] > button:active {
+            transform: scale(0.96) translateY(2px) !important;
+            box-shadow: 0 4px 10px rgba(15, 23, 42, 0.12) !important;
+        }
+
+        div[data-testid="stButton"] > button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
         }
 
         div[data-testid="stButton"] > button[kind="primary"] {
             background: linear-gradient(135deg, #0f766e 0%, #1d4ed8 100%);
             border: none;
             color: white;
+        }
+
+        div[data-testid="stButton"] > button[kind="primary"]:active {
+            background: linear-gradient(135deg, #0d5c56 0%, #173fa6 100%) !important;
         }
 
         /* Style top-level stHorizontalBlock for controls wrapper */
@@ -184,6 +199,12 @@ def inject_styles():
             border: 1px solid #86efac;
         }
 
+        .status-box.danger {
+            background: #fee2e2;
+            color: #991b1b;
+            border: 1px solid #fca5a5;
+        }
+
         .section-title {
             margin-top: 0.35rem;
             margin-bottom: 0.15rem;
@@ -197,6 +218,29 @@ def inject_styles():
             margin-bottom: 0.95rem;
             font-size: 0.94rem;
         }
+
+        /* Ensure tab labels are visible and high contrast */
+        button[data-testid="stTab"] {
+            color: #475569 !important;
+            font-size: 0.95rem !important;
+            font-weight: 600 !important;
+        }
+
+        button[data-testid="stTab"] p {
+            color: inherit !important;
+            font-size: inherit !important;
+            font-weight: inherit !important;
+        }
+
+        button[data-testid="stTab"][aria-selected="true"] {
+            color: #ff4b4b !important;
+            font-weight: 700 !important;
+        }
+
+        button[data-testid="stTab"][aria-selected="true"] p {
+            color: inherit !important;
+            font-weight: inherit !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -209,13 +253,9 @@ def render_section_header(title, caption):
 
 
 def render_content_card(title, body_html):
+    cleaned_body = "\n".join(line.strip() for line in body_html.splitlines())
     st.markdown(
-        f"""
-        <div class="content-card">
-          <div class="content-title">{title}</div>
-          <div class="content-text">{body_html}</div>
-        </div>
-        """,
+        f'<div class="content-card"><div class="content-title">{title}</div><div class="content-text">{cleaned_body}</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -253,17 +293,23 @@ def build_trade_panel_payload(bundle):
     structure = bundle.chart_payload.get("overlays", {}).get("structure", {})
     pattern = candle_pattern(bundle.candles)
     has_mismatch = any("Feed mismatch" in w or "mismatch" in w.lower() for w in bundle.signal.warnings)
+    is_trade_removed = bundle.signal.signal == "TRADE_REMOVED"
     actionable = (bundle.signal.signal in ["BUY", "SELL", "STRONG_BUY", "STRONG_SELL"] 
                   and bundle.signal.stop_loss not in [None, 0, 0.0] 
                   and not has_mismatch)
     show_levels = actionable and bundle.signal.entry not in [None, 0, 0.0]
-    status = "Approved" if actionable else ("Blocked / Feed Mismatch" if has_mismatch else "Blocked / No Trade")
+    
+    if is_trade_removed:
+        status = "TRADE REMOVED"
+    else:
+        status = "Approved" if actionable else ("Blocked / Feed Mismatch" if has_mismatch else "Blocked / No Trade")
+        
     reasons = [r for r in (bundle.signal.reasons or []) if not r.startswith("Gemini:")]
     return {
         "symbol": bundle.signal.symbol,
         "timeframe": bundle.signal.timeframe,
         "signal": bundle.signal.signal,
-        "confidence": f"{bundle.signal.confidence:.2f}%",
+        "confidence": f"{bundle.signal.confidence:.2f}%" if bundle.signal.confidence is not None else "--",
         "status": status,
         "entry": format_price(bundle.signal.entry) if show_levels else "--",
         "stop_loss": format_price(bundle.signal.stop_loss) if show_levels else "--",
@@ -276,7 +322,7 @@ def build_trade_panel_payload(bundle):
         "choch": structure.get("choch") or "none",
         "pattern": pattern.replace("_", " ").title() if pattern else "No clear pattern",
         "warnings": bundle.signal.warnings[:4],
-        "sync": f"{bundle.sync.match_percentage}%",
+        "sync": f"{bundle.sync.match_percentage}%" if bundle.sync else "100%",
         "actionable": actionable,
         "reasons": reasons,
     }
@@ -314,6 +360,18 @@ def build_chart_draw_payload(bundle):
                 "color": "#7c3aed",
                 "shape": "arrowDown",
                 "text": marker_text,
+            }
+        )
+
+    if bundle.signal.signal == "TRADE_REMOVED" and candle_records:
+        last_candle = candle_records[-1]
+        pattern_markers.append(
+            {
+                "time": last_candle["time"],
+                "position": "aboveBar",
+                "color": "#dc2626",
+                "shape": "arrowDown",
+                "text": "INVALIDATED",
             }
         )
 
@@ -470,6 +528,14 @@ def render_lightweight_chart(symbol, timeframe, bundle):
           50% {{ opacity: 1; }}
           100% {{ opacity: 0.3; }}
         }}
+        @keyframes spin {{
+          0% {{ transform: rotate(0deg); }}
+          100% {{ transform: rotate(360deg); }}
+        }}
+        .spinning {{
+          display: inline-block !important;
+          animation: spin 1s linear infinite;
+        }}
         #{panel_id}::-webkit-resizer {{
           background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><path d="M10,0 L0,10 M10,3 L3,10 M10,6 L6,10" stroke="rgba(255,255,255,0.6)" stroke-width="1.5" stroke-linecap="round"/></svg>');
           background-repeat: no-repeat;
@@ -544,20 +610,42 @@ def render_lightweight_chart(symbol, timeframe, bundle):
         const panel = document.getElementById("{panel_id}");
         const chartRoot = document.getElementById("{container_id}");
 
+        let statusColor = "#22c55e";
+        let signalBg = "rgba(34, 197, 94, 0.25)";
+        let headerGradient = "linear-gradient(135deg, rgba(20,184,166,0.55), rgba(37,99,235,0.42))";
+
+        if (panelPayload.signal === "TRADE_REMOVED") {{
+          statusColor = "#ef4444";
+          signalBg = "rgba(239, 68, 68, 0.35)";
+          headerGradient = "linear-gradient(135deg, rgba(239, 68, 68, 0.6), rgba(220, 38, 38, 0.5))";
+        }} else if (panelPayload.signal.includes("BUY")) {{
+          statusColor = "#22c55e";
+          signalBg = "rgba(34, 197, 94, 0.35)";
+          headerGradient = "linear-gradient(135deg, rgba(16, 185, 129, 0.6), rgba(5, 150, 105, 0.5))";
+        }} else if (panelPayload.signal.includes("SELL")) {{
+          statusColor = "#f97316";
+          signalBg = "rgba(249, 115, 22, 0.35)";
+          headerGradient = "linear-gradient(135deg, rgba(249, 115, 22, 0.6), rgba(234, 88, 12, 0.5))";
+        }} else {{
+          statusColor = "#94a3b8";
+          signalBg = "rgba(148, 163, 184, 0.25)";
+          headerGradient = "linear-gradient(135deg, rgba(100, 116, 139, 0.55), rgba(71, 85, 105, 0.42))";
+        }}
+
         panel.innerHTML = `
-          <div id="{panel_id}_drag" style="padding:12px 16px;background:linear-gradient(135deg, rgba(20,184,166,0.55), rgba(37,99,235,0.42));font-size:16px;font-weight:700;position:sticky;top:0;display:flex;justify-content:space-between;align-items:center;cursor:move;user-select:none;border-top-left-radius:24px;border-top-right-radius:24px;">
+          <div id="{panel_id}_drag" style="padding:12px 16px;background:${{headerGradient}};font-size:16px;font-weight:700;position:sticky;top:0;display:flex;justify-content:space-between;align-items:center;cursor:move;user-select:none;border-top-left-radius:24px;border-top-right-radius:24px;">
             <span style="display:flex;align-items:center;gap:6px;">
-              <span style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;box-shadow:0 0 8px #22c55e;"></span>
+              <span style="width:8px;height:8px;border-radius:50%;background:${{statusColor}};display:inline-block;box-shadow:0 0 8px ${{statusColor}};"></span>
               Trading Panel
             </span>
             <div style="display:flex;gap:6px;align-items:center;">
-              <button type="button" id="{panel_id}_refresh" style="border:none;background:rgba(255,255,255,0.16);color:#fff;border-radius:999px;padding:6px 12px;cursor:pointer;font-weight:700;font-size:11px;transition:background 0.2s;">🔄 Refresh</button>
+              <button type="button" id="{panel_id}_refresh" style="border:none;background:rgba(255,255,255,0.16);color:#fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;transition:background 0.2s;" title="Refresh Panel">🔄</button>
               <button type="button" id="{panel_id}_minimise" style="border:none;background:rgba(255,255,255,0.16);color:#fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-weight:700;font-size:14px;transition:background 0.2s;">−</button>
             </div>
           </div>
           <div id="{panel_id}_content" style="padding:16px;">
             <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
-              <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{panelPayload.signal}}</span>
+              <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:${{signalBg}};">${{panelPayload.signal}}</span>
               <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{panelPayload.confidence}}</span>
               <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{panelPayload.status}}</span>
             </div>
@@ -657,14 +745,99 @@ def render_lightweight_chart(symbol, timeframe, bundle):
           candleSeries.setMarkers(markers);
         }}
 
-        const triggerRefresh = () => {{
-          const parentDoc = window.parent.document;
-          const buttons = Array.from(parentDoc.querySelectorAll('button'));
-          const runButton = buttons.find((btn) => (btn.innerText || '').trim() === 'Run Analysis');
-          if (runButton) runButton.click();
+        const updatePanelContent = (data) => {{
+          let statusColor = "#22c55e";
+          let signalBg = "rgba(34, 197, 94, 0.25)";
+          let headerGradient = "linear-gradient(135deg, rgba(20,184,166,0.55), rgba(37,99,235,0.42))";
+
+          if (data.signal === "TRADE_REMOVED") {{
+            statusColor = "#ef4444";
+            signalBg = "rgba(239, 68, 68, 0.35)";
+            headerGradient = "linear-gradient(135deg, rgba(239, 68, 68, 0.6), rgba(220, 38, 38, 0.5))";
+          }} else if (data.signal.includes("BUY")) {{
+            statusColor = "#22c55e";
+            signalBg = "rgba(34, 197, 94, 0.35)";
+            headerGradient = "linear-gradient(135deg, rgba(16, 185, 129, 0.6), rgba(5, 150, 105, 0.5))";
+          }} else if (data.signal.includes("SELL")) {{
+            statusColor = "#f97316";
+            signalBg = "rgba(249, 115, 22, 0.35)";
+            headerGradient = "linear-gradient(135deg, rgba(249, 115, 22, 0.6), rgba(234, 88, 12, 0.5))";
+          }} else {{
+            statusColor = "#94a3b8";
+            signalBg = "rgba(148, 163, 184, 0.25)";
+            headerGradient = "linear-gradient(135deg, rgba(100, 116, 139, 0.55), rgba(71, 85, 105, 0.42))";
+          }}
+
+          const dragHeader = document.getElementById("{panel_id}_drag");
+          if (dragHeader) {{
+            dragHeader.style.background = headerGradient;
+          }}
+          const statusDot = dragHeader ? dragHeader.querySelector('span > span') : null;
+          if (statusDot) {{
+            statusDot.style.background = statusColor;
+            statusDot.style.boxShadow = `0 0 8px ${{statusColor}}`;
+          }}
+
+          const contentDiv = document.getElementById("{panel_id}_content");
+          if (contentDiv) {{
+            contentDiv.innerHTML = `
+              <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:${{signalBg}};">${{data.signal}}</span>
+                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{data.confidence}}</span>
+                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{data.status}}</span>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:14px;">
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Symbol</div><div style="font-size:15px;font-weight:700;">${{data.symbol}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Timeframe</div><div style="font-size:15px;font-weight:700;">${{data.timeframe}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Entry</div><div style="font-size:15px;font-weight:700;">${{data.entry}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Stop Loss</div><div style="font-size:15px;font-weight:700;">${{data.stop_loss}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 1</div><div style="font-size:15px;font-weight:700;">${{data.tp1}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 2</div><div style="font-size:15px;font-weight:700;">${{data.tp2}}</div></div>
+              </div>
+              <div style="display:grid;gap:8px;">
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(37,99,235,0.16);border:1px solid rgba(96,165,250,0.35);">
+                  <div style="font-size:11px;color:#bfdbfe;margin-bottom:4px;">Candle Pattern</div>
+                  <div style="font-size:14px;font-weight:700;color:#eff6ff;">${{data.pattern}}</div>
+                </div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);">
+                  <div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Structure</div>
+                  <div style="font-size:13px;font-weight:700;">Trend: ${{data.trend}}</div>
+                  <div style="font-size:13px;font-weight:700;">Phase: ${{data.phase}}</div>
+                  <div style="font-size:13px;font-weight:700;">BOS / CHOCH: ${{data.bos}} / ${{data.choch}}</div>
+                </div>
+              </div>
+            `;
+          }}
         }};
 
-        document.getElementById('{panel_id}_refresh').onclick = triggerRefresh;
+        const triggerLocalRefresh = () => {{
+          const refreshBtn = document.getElementById('{panel_id}_refresh');
+          if (refreshBtn) {{
+            refreshBtn.classList.add('spinning');
+            refreshBtn.disabled = true;
+          }}
+
+          fetch(`http://127.0.0.1:8505/refresh?symbol=${{encodeURIComponent(panelPayload.symbol)}}&timeframe=${{encodeURIComponent(panelPayload.timeframe)}}`)
+            .then(res => res.json())
+            .then(data => {{
+              if (data && !data.error) {{
+                updatePanelContent(data);
+              }} else {{
+                console.error("Refresh error:", data ? data.error : "empty response");
+              }}
+            }})
+            .catch(err => {{
+              console.error("Fetch failed:", err);
+            }})
+            .finally(() => {{
+              if (refreshBtn) {{
+                refreshBtn.classList.remove('spinning');
+                refreshBtn.disabled = false;
+              }}
+            }});
+        }};
+
+        document.getElementById('{panel_id}_refresh').onclick = triggerLocalRefresh;
         document.getElementById('{container_id}_fullscreen').onclick = () => {{
           if (!document.fullscreenElement) {{
             wrapper.requestFullscreen();
@@ -950,7 +1123,7 @@ def render_lightweight_chart(symbol, timeframe, bundle):
         resizeObserver.observe(wrapper);
 
         const refreshIntervalMs = 15000;
-        window.setInterval(triggerRefresh, refreshIntervalMs);
+        window.setInterval(triggerLocalRefresh, refreshIntervalMs);
         chart.timeScale().fitContent();
         setTimeout(updateOverlay, 300);
       </script>
@@ -970,6 +1143,14 @@ def render_svg_chart(symbol, timeframe, bundle):
     html = f"""
     <div id="{container_id}_wrapper" style="height:760px;width:100%;position:relative;border:1px solid rgba(148,163,184,0.35);border-radius:22px;overflow:hidden;background:#ffffff;">
       <style>
+        @keyframes spin {{
+          0% {{ transform: rotate(0deg); }}
+          100% {{ transform: rotate(360deg); }}
+        }}
+        .spinning {{
+          display: inline-block !important;
+          animation: spin 1s linear infinite;
+        }}
         #{panel_id}::-webkit-resizer {{
           background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><path d="M10,0 L0,10 M10,3 L3,10 M10,6 L6,10" stroke="rgba(255,255,255,0.6)" stroke-width="1.5" stroke-linecap="round"/></svg>');
           background-repeat: no-repeat;
@@ -990,14 +1171,41 @@ def render_svg_chart(symbol, timeframe, bundle):
         const panel = document.getElementById("{panel_id}");
         const chartRoot = document.getElementById("{container_id}");
 
+        let statusColor = "#22c55e";
+        let signalBg = "rgba(34, 197, 94, 0.25)";
+        let headerGradient = "linear-gradient(135deg, rgba(20,184,166,0.55), rgba(37,99,235,0.42))";
+
+        if (panelPayload.signal === "TRADE_REMOVED") {{
+          statusColor = "#ef4444";
+          signalBg = "rgba(239, 68, 68, 0.35)";
+          headerGradient = "linear-gradient(135deg, rgba(239, 68, 68, 0.6), rgba(220, 38, 38, 0.5))";
+        }} else if (panelPayload.signal.includes("BUY")) {{
+          statusColor = "#22c55e";
+          signalBg = "rgba(34, 197, 94, 0.35)";
+          headerGradient = "linear-gradient(135deg, rgba(16, 185, 129, 0.6), rgba(5, 150, 105, 0.5))";
+        }} else if (panelPayload.signal.includes("SELL")) {{
+          statusColor = "#f97316";
+          signalBg = "rgba(249, 115, 22, 0.35)";
+          headerGradient = "linear-gradient(135deg, rgba(249, 115, 22, 0.6), rgba(234, 88, 12, 0.5))";
+        }} else {{
+          statusColor = "#94a3b8";
+          signalBg = "rgba(148, 163, 184, 0.25)";
+          headerGradient = "linear-gradient(135deg, rgba(100, 116, 139, 0.55), rgba(71, 85, 105, 0.42))";
+        }}
+
         panel.innerHTML = `
-          <div id="{panel_id}_drag" style="padding:14px 16px;background:linear-gradient(135deg, rgba(20,184,166,0.45), rgba(37,99,235,0.42));font-size:16px;font-weight:700;position:sticky;top:0;display:flex;justify-content:space-between;align-items:center;cursor:move;">
-            <span>Trading Panel</span>
-            <button type="button" id="{panel_id}_refresh" style="border:none;background:rgba(255,255,255,0.16);color:#fff;border-radius:999px;padding:6px 10px;cursor:pointer;font-weight:700;">Refresh</button>
+          <div id="{panel_id}_drag" style="padding:14px 16px;background:${{headerGradient}};font-size:16px;font-weight:700;position:sticky;top:0;display:flex;justify-content:space-between;align-items:center;cursor:move;user-select:none;border-top-left-radius:24px;border-top-right-radius:24px;">
+            <span style="display:flex;align-items:center;gap:6px;">
+              <span style="width:8px;height:8px;border-radius:50%;background:${{statusColor}};display:inline-block;box-shadow:0 0 8px ${{statusColor}};"></span>
+              Trading Panel
+            </span>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <button type="button" id="{panel_id}_refresh" style="border:none;background:rgba(255,255,255,0.16);color:#fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;transition:background 0.2s;" title="Refresh Panel">🔄</button>
+            </div>
           </div>
-          <div style="padding:16px;">
+          <div id="{panel_id}_content" style="padding:16px;">
             <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
-              <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{panelPayload.signal}}</span>
+              <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:${{signalBg}};">${{panelPayload.signal}}</span>
               <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{panelPayload.confidence}}</span>
               <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{panelPayload.status}}</span>
             </div>
@@ -1023,11 +1231,69 @@ def render_svg_chart(symbol, timeframe, bundle):
             </div>
           </div>`;
 
-        const triggerRefresh = () => {{
-          const parentDoc = window.parent.document;
-          const buttons = Array.from(parentDoc.querySelectorAll('button'));
-          const runButton = buttons.find((btn) => (btn.innerText || '').trim() === 'Run Analysis');
-          if (runButton) runButton.click();
+        const updatePanelContent = (data) => {{
+          let statusColor = "#22c55e";
+          let signalBg = "rgba(34, 197, 94, 0.25)";
+          let headerGradient = "linear-gradient(135deg, rgba(20,184,166,0.55), rgba(37,99,235,0.42))";
+
+          if (data.signal === "TRADE_REMOVED") {{
+            statusColor = "#ef4444";
+            signalBg = "rgba(239, 68, 68, 0.35)";
+            headerGradient = "linear-gradient(135deg, rgba(239, 68, 68, 0.6), rgba(220, 38, 38, 0.5))";
+          }} else if (data.signal.includes("BUY")) {{
+            statusColor = "#22c55e";
+            signalBg = "rgba(34, 197, 94, 0.35)";
+            headerGradient = "linear-gradient(135deg, rgba(16, 185, 129, 0.6), rgba(5, 150, 105, 0.5))";
+          }} else if (data.signal.includes("SELL")) {{
+            statusColor = "#f97316";
+            signalBg = "rgba(249, 115, 22, 0.35)";
+            headerGradient = "linear-gradient(135deg, rgba(249, 115, 22, 0.6), rgba(234, 88, 12, 0.5))";
+          }} else {{
+            statusColor = "#94a3b8";
+            signalBg = "rgba(148, 163, 184, 0.25)";
+            headerGradient = "linear-gradient(135deg, rgba(100, 116, 139, 0.55), rgba(71, 85, 105, 0.42))";
+          }}
+
+          const dragHeader = document.getElementById("{panel_id}_drag");
+          if (dragHeader) {{
+            dragHeader.style.background = headerGradient;
+          }}
+          const statusDot = dragHeader ? dragHeader.querySelector('span > span') : null;
+          if (statusDot) {{
+            statusDot.style.background = statusColor;
+            statusDot.style.boxShadow = `0 0 8px ${{statusColor}}`;
+          }}
+
+          const contentDiv = document.getElementById("{panel_id}_content");
+          if (contentDiv) {{
+            contentDiv.innerHTML = `
+              <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:${{signalBg}};">${{data.signal}}</span>
+                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{data.confidence}}</span>
+                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{data.status}}</span>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:14px;">
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Symbol</div><div style="font-size:15px;font-weight:700;">${{data.symbol}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Timeframe</div><div style="font-size:15px;font-weight:700;">${{data.timeframe}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Entry</div><div style="font-size:15px;font-weight:700;">${{data.entry}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Stop Loss</div><div style="font-size:15px;font-weight:700;">${{data.stop_loss}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 1</div><div style="font-size:15px;font-weight:700;">${{data.tp1}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 2</div><div style="font-size:15px;font-weight:700;">${{data.tp2}}</div></div>
+              </div>
+              <div style="display:grid;gap:8px;">
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(37,99,235,0.16);border:1px solid rgba(96,165,250,0.35);">
+                  <div style="font-size:11px;color:#bfdbfe;margin-bottom:4px;">Candle Pattern</div>
+                  <div style="font-size:14px;font-weight:700;color:#eff6ff;">${{data.pattern}}</div>
+                </div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);">
+                  <div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Structure</div>
+                  <div style="font-size:13px;font-weight:700;">Trend: ${{data.trend}}</div>
+                  <div style="font-size:13px;font-weight:700;">Phase: ${{data.phase}}</div>
+                  <div style="font-size:13px;font-weight:700;">BOS / CHOCH: ${{data.bos}} / ${{data.choch}}</div>
+                </div>
+              </div>
+            `;
+          }}
         }};
 
         const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({{
@@ -1136,7 +1402,34 @@ def render_svg_chart(symbol, timeframe, bundle):
           chartRoot.innerHTML = svg;
         }};
 
-        document.getElementById('{panel_id}_refresh').onclick = triggerRefresh;
+        const triggerLocalRefresh = () => {{
+          const refreshBtn = document.getElementById('{panel_id}_refresh');
+          if (refreshBtn) {{
+            refreshBtn.classList.add('spinning');
+            refreshBtn.disabled = true;
+          }}
+
+          fetch(`http://127.0.0.1:8505/refresh?symbol=${{encodeURIComponent(panelPayload.symbol)}}&timeframe=${{encodeURIComponent(panelPayload.timeframe)}}`)
+            .then(res => res.json())
+            .then(data => {{
+              if (data && !data.error) {{
+                updatePanelContent(data);
+              }} else {{
+                console.error("Refresh error:", data ? data.error : "empty response");
+              }}
+            }})
+            .catch(err => {{
+              console.error("Fetch failed:", err);
+            }})
+            .finally(() => {{
+              if (refreshBtn) {{
+                refreshBtn.classList.remove('spinning');
+                refreshBtn.disabled = false;
+              }}
+            }});
+        }};
+
+        document.getElementById('{panel_id}_refresh').onclick = triggerLocalRefresh;
         document.getElementById('{container_id}_fullscreen').onclick = () => {{
           if (!document.fullscreenElement) {{
             wrapper.requestFullscreen();
@@ -1171,7 +1464,7 @@ def render_svg_chart(symbol, timeframe, bundle):
           dragging = false;
         }});
 
-        window.setInterval(triggerRefresh, 15000);
+        window.setInterval(triggerLocalRefresh, 15000);
         renderSvgChart();
       </script>
     </div>
@@ -1190,6 +1483,14 @@ def render_tradingview_widget(symbol, timeframe, bundle):
     html = f"""
     <div id="{container_id}_shell" style="height:760px;width:100%;position:relative;border:1px solid rgba(148,163,184,0.35);border-radius:22px;overflow:hidden;background:#ffffff;">
       <style>
+        @keyframes spin {{
+          0% {{ transform: rotate(0deg); }}
+          100% {{ transform: rotate(360deg); }}
+        }}
+        .spinning {{
+          display: inline-block !important;
+          animation: spin 1s linear infinite;
+        }}
         #{panel_id}::-webkit-resizer {{
           background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><path d="M10,0 L0,10 M10,3 L3,10 M10,6 L6,10" stroke="rgba(255,255,255,0.6)" stroke-width="1.5" stroke-linecap="round"/></svg>');
           background-repeat: no-repeat;
@@ -1211,20 +1512,42 @@ def render_tradingview_widget(symbol, timeframe, bundle):
         const panel = document.getElementById("{panel_id}");
         const fullscreenButton = document.getElementById("{container_id}_fullscreen");
 
+        let statusColor = "#22c55e";
+        let signalBg = "rgba(34, 197, 94, 0.25)";
+        let headerGradient = "linear-gradient(135deg, rgba(20,184,166,0.55), rgba(37,99,235,0.42))";
+
+        if (panelPayload.signal === "TRADE_REMOVED") {{
+          statusColor = "#ef4444";
+          signalBg = "rgba(239, 68, 68, 0.35)";
+          headerGradient = "linear-gradient(135deg, rgba(239, 68, 68, 0.6), rgba(220, 38, 38, 0.5))";
+        }} else if (panelPayload.signal.includes("BUY")) {{
+          statusColor = "#22c55e";
+          signalBg = "rgba(34, 197, 94, 0.35)";
+          headerGradient = "linear-gradient(135deg, rgba(16, 185, 129, 0.6), rgba(5, 150, 105, 0.5))";
+        }} else if (panelPayload.signal.includes("SELL")) {{
+          statusColor = "#f97316";
+          signalBg = "rgba(249, 115, 22, 0.35)";
+          headerGradient = "linear-gradient(135deg, rgba(249, 115, 22, 0.6), rgba(234, 88, 12, 0.5))";
+        }} else {{
+          statusColor = "#94a3b8";
+          signalBg = "rgba(148, 163, 184, 0.25)";
+          headerGradient = "linear-gradient(135deg, rgba(100, 116, 139, 0.55), rgba(71, 85, 105, 0.42))";
+        }}
+
         panel.innerHTML = `
-          <div id="{panel_id}_drag" style="padding:12px 16px;background:linear-gradient(135deg, rgba(20,184,166,0.55), rgba(37,99,235,0.42));font-size:16px;font-weight:700;position:sticky;top:0;display:flex;justify-content:space-between;align-items:center;cursor:move;user-select:none;border-top-left-radius:24px;border-top-right-radius:24px;">
+          <div id="{panel_id}_drag" style="padding:12px 16px;background:${{headerGradient}};font-size:16px;font-weight:700;position:sticky;top:0;display:flex;justify-content:space-between;align-items:center;cursor:move;user-select:none;border-top-left-radius:24px;border-top-right-radius:24px;">
             <span style="display:flex;align-items:center;gap:6px;">
-              <span style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;box-shadow:0 0 8px #22c55e;"></span>
+              <span style="width:8px;height:8px;border-radius:50%;background:${{statusColor}};display:inline-block;box-shadow:0 0 8px ${{statusColor}};"></span>
               Trading Panel
             </span>
             <div style="display:flex;gap:6px;align-items:center;">
-              <button type="button" id="{panel_id}_refresh" style="border:none;background:rgba(255,255,255,0.16);color:#fff;border-radius:999px;padding:6px 12px;cursor:pointer;font-weight:700;font-size:11px;transition:background 0.2s;">🔄 Refresh</button>
+              <button type="button" id="{panel_id}_refresh" style="border:none;background:rgba(255,255,255,0.16);color:#fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;transition:background 0.2s;" title="Refresh Panel">🔄</button>
               <button type="button" id="{panel_id}_minimise" style="border:none;background:rgba(255,255,255,0.16);color:#fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-weight:700;font-size:14px;transition:background 0.2s;">−</button>
             </div>
           </div>
           <div id="{panel_id}_content" style="padding:16px;">
             <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
-              <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{panelPayload.signal}}</span>
+              <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:${{signalBg}};">${{panelPayload.signal}}</span>
               <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{panelPayload.confidence}}</span>
               <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{panelPayload.status}}</span>
             </div>
@@ -1254,11 +1577,69 @@ def render_tradingview_widget(symbol, timeframe, bundle):
           chartNode.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#64748b;font:600 15px Arial,sans-serif;">${{message}}</div>`;
         }};
 
-        const triggerRefresh = () => {{
-          const parentDoc = window.parent.document;
-          const buttons = Array.from(parentDoc.querySelectorAll('button'));
-          const runButton = buttons.find((btn) => (btn.innerText || '').trim() === 'Run Analysis');
-          if (runButton) runButton.click();
+        const updatePanelContent = (data) => {{
+          let statusColor = "#22c55e";
+          let signalBg = "rgba(34, 197, 94, 0.25)";
+          let headerGradient = "linear-gradient(135deg, rgba(20,184,166,0.55), rgba(37,99,235,0.42))";
+
+          if (data.signal === "TRADE_REMOVED") {{
+            statusColor = "#ef4444";
+            signalBg = "rgba(239, 68, 68, 0.35)";
+            headerGradient = "linear-gradient(135deg, rgba(239, 68, 68, 0.6), rgba(220, 38, 38, 0.5))";
+          }} else if (data.signal.includes("BUY")) {{
+            statusColor = "#22c55e";
+            signalBg = "rgba(34, 197, 94, 0.35)";
+            headerGradient = "linear-gradient(135deg, rgba(16, 185, 129, 0.6), rgba(5, 150, 105, 0.5))";
+          }} else if (data.signal.includes("SELL")) {{
+            statusColor = "#f97316";
+            signalBg = "rgba(249, 115, 22, 0.35)";
+            headerGradient = "linear-gradient(135deg, rgba(249, 115, 22, 0.6), rgba(234, 88, 12, 0.5))";
+          }} else {{
+            statusColor = "#94a3b8";
+            signalBg = "rgba(148, 163, 184, 0.25)";
+            headerGradient = "linear-gradient(135deg, rgba(100, 116, 139, 0.55), rgba(71, 85, 105, 0.42))";
+          }}
+
+          const dragHeader = document.getElementById("{panel_id}_drag");
+          if (dragHeader) {{
+            dragHeader.style.background = headerGradient;
+          }}
+          const statusDot = dragHeader ? dragHeader.querySelector('span > span') : null;
+          if (statusDot) {{
+            statusDot.style.background = statusColor;
+            statusDot.style.boxShadow = `0 0 8px ${{statusColor}}`;
+          }}
+
+          const contentDiv = document.getElementById("{panel_id}_content");
+          if (contentDiv) {{
+            contentDiv.innerHTML = `
+              <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:${{signalBg}};">${{data.signal}}</span>
+                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{data.confidence}}</span>
+                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{data.status}}</span>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:14px;">
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Symbol</div><div style="font-size:15px;font-weight:700;">${{data.symbol}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Timeframe</div><div style="font-size:15px;font-weight:700;">${{data.timeframe}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Entry</div><div style="font-size:15px;font-weight:700;">${{data.entry}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Stop Loss</div><div style="font-size:15px;font-weight:700;">${{data.stop_loss}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 1</div><div style="font-size:15px;font-weight:700;">${{data.tp1}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 2</div><div style="font-size:15px;font-weight:700;">${{data.tp2}}</div></div>
+              </div>
+              <div style="display:grid;gap:8px;">
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(37,99,235,0.16);border:1px solid rgba(96,165,250,0.35);">
+                  <div style="font-size:11px;color:#bfdbfe;margin-bottom:4px;">Candle Pattern</div>
+                  <div style="font-size:14px;font-weight:700;color:#eff6ff;">${{data.pattern}}</div>
+                </div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);">
+                  <div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Structure</div>
+                  <div style="font-size:13px;font-weight:700;">Trend: ${{data.trend}}</div>
+                  <div style="font-size:13px;font-weight:700;">Phase: ${{data.phase}}</div>
+                  <div style="font-size:13px;font-weight:700;">BOS / CHOCH: ${{data.bos}} / ${{data.choch}}</div>
+                </div>
+              </div>
+            `;
+          }}
         }};
 
         const mountWidget = () => {{
@@ -1296,7 +1677,34 @@ def render_tradingview_widget(symbol, timeframe, bundle):
           }}
         }};
 
-        document.getElementById("{panel_id}_refresh").onclick = triggerRefresh;
+        const triggerLocalRefresh = () => {{
+          const refreshBtn = document.getElementById("{panel_id}_refresh");
+          if (refreshBtn) {{
+            refreshBtn.classList.add('spinning');
+            refreshBtn.disabled = true;
+          }}
+
+          fetch(`http://127.0.0.1:8505/refresh?symbol=${{encodeURIComponent(panelPayload.symbol)}}&timeframe=${{encodeURIComponent(panelPayload.timeframe)}}`)
+            .then(res => res.json())
+            .then(data => {{
+              if (data && !data.error) {{
+                updatePanelContent(data);
+              }} else {{
+                console.error("Refresh error:", data ? data.error : "empty response");
+              }}
+            }})
+            .catch(err => {{
+              console.error("Fetch failed:", err);
+            }})
+            .finally(() => {{
+              if (refreshBtn) {{
+                refreshBtn.classList.remove('spinning');
+                refreshBtn.disabled = false;
+              }}
+            }});
+        }};
+
+        document.getElementById("{panel_id}_refresh").onclick = triggerLocalRefresh;
 
         // Minimise functionality
         const minimiseBtn = document.getElementById("{panel_id}_minimise");
@@ -1371,7 +1779,7 @@ def _conf_gauge_html(confidence: float, height: str = "8px", font_size: str = "1
     pct   = min(max(float(confidence), 0), 100)
     color = ("#16a34a" if pct >= 70 else ("#f59e0b" if pct >= 45 else "#dc2626"))
     label_color = color
-    return f"""
+    html = f"""
     <div style='display:flex;align-items:center;gap:8px;'>
       <div style='flex:1;background:rgba(148,163,184,0.18);border-radius:999px;height:{height};overflow:hidden;'>
         <div style='width:{pct:.1f}%;height:100%;background:{color};border-radius:999px;
@@ -1380,6 +1788,7 @@ def _conf_gauge_html(confidence: float, height: str = "8px", font_size: str = "1
       <span style='font-size:{font_size};font-weight:800;color:{label_color};min-width:42px;text-align:right;'>{pct:.1f}%</span>
     </div>
     """
+    return "\n".join(line.strip() for line in html.splitlines())
 
 
 def render_metric_strip(bundle):
@@ -1399,7 +1808,7 @@ def render_metric_strip(bundle):
 
     # Build the confidence gauge cell separately
     conf_gauge = f"""
-    <div class="metric-card" style='min-width:220px;'>
+    <div class="metric-card">
       <div class="metric-label">Confidence</div>
       <div style='margin-top:6px;'>
         <div style='background:rgba(148,163,184,0.18);border-radius:999px;height:10px;overflow:hidden;'>
@@ -1458,6 +1867,94 @@ inject_styles()
 st.title("AI Trading Platform")
 st.caption("TradingView-only workspace with local rule-based analysis and chart overlays.")
 
+import http.server
+import socketserver
+import threading
+import urllib.parse
+
+_global_orchestrator = None
+
+class PanelApiHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def end_headers(self):
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        super().end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def do_GET(self):
+        parsed_url = urllib.parse.urlparse(self.path)
+        if parsed_url.path == '/refresh':
+            query = urllib.parse.parse_qs(parsed_url.query)
+            symbol = query.get('symbol', [None])[0]
+            timeframe = query.get('timeframe', [None])[0]
+            
+            if not symbol or not timeframe:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'{"error": "Missing symbol or timeframe"}')
+                return
+            
+            global _global_orchestrator
+            if _global_orchestrator is None:
+                from backend.service_container import build_container
+                container = build_container()
+                _global_orchestrator = container["analysis_orchestrator"]
+            
+            try:
+                bundle = _global_orchestrator.analyze(symbol, timeframe)
+                if bundle is None:
+                    self.send_response(500)
+                    self.end_headers()
+                    self.wfile.write(b'{"error": "Analysis failed"}')
+                    return
+                
+                # Log signal
+                _global_orchestrator.log_signal(bundle)
+                
+                # Build panel payload
+                payload = build_trade_panel_payload(bundle)
+                
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps(payload).encode('utf-8'))
+            except Exception as e:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+@st.cache_resource
+def start_panel_api_server():
+    global _global_orchestrator
+    container = _get_container_v2()
+    _global_orchestrator = container["analysis_orchestrator"]
+    
+    def run_server():
+        port = 8505
+        server_address = ('127.0.0.1', port)
+        class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+            allow_reuse_address = True
+        
+        try:
+            httpd = ThreadedTCPServer(server_address, PanelApiHandler)
+            httpd.serve_forever()
+        except Exception as e:
+            pass
+            
+    t = threading.Thread(target=run_server, daemon=True)
+    t.start()
+    return t
+
 @st.cache_resource
 def _get_container_v2():
     return build_container()
@@ -1467,6 +1964,8 @@ orchestrator = container["analysis_orchestrator"]
 signal_repository = container["signal_repository"]
 news_signal_repository = container.get("news_signal_repository")
 forex_factory_feed = container.get("forex_factory_feed")
+
+start_panel_api_server()
 
 with st.container():
     control_cols = st.columns([1.2, 1.0, 1.2], gap="medium")
@@ -1484,7 +1983,10 @@ if (st.session_state.analysis_bundle is None or
     st.session_state.analysis_timeframe != timeframe or 
     run_analysis):
     
-    bundle = orchestrator.analyze(symbol, timeframe)
+    bundle = None
+    with st.spinner("⏳ Analyzing market structure and executing rule checks..."):
+        bundle = orchestrator.analyze(symbol, timeframe)
+
     if bundle is None:
         st.error("Unable to build analysis bundle from the configured feeds.")
     else:
@@ -1505,8 +2007,8 @@ render_metric_strip(bundle)
 # Render TradingView Live Chart Widget
 render_tradingview_widget(st.session_state.analysis_symbol, st.session_state.analysis_timeframe, bundle)
 
-overview_tab, structure_tab, sessions_tab, news_tab, history_tab = st.tabs(
-    ["📊 Overview", "🏗️ Structure Logic", "🌍 Sessions", "📰 News Intel", "📜 Trade History"]
+overview_tab, mtf_tab, structure_tab, sessions_tab, news_tab, history_tab = st.tabs(
+    ["📊 Overview", "🔄 Multi-Timeframe", "🏗️ Structure Logic", "🌍 Sessions", "📰 News Intel", "📜 Trade History"]
 )
 
 with overview_tab:
@@ -1517,7 +2019,10 @@ with overview_tab:
     show_levels = approved_trade and bundle.signal.entry not in [None, 0, 0.0]
 
     # Status banner
-    if approved_trade:
+    if bundle.signal.signal == "TRADE_REMOVED":
+        reason = bundle.signal.reasons[0] if bundle.signal.reasons else "Active trade invalidated"
+        render_status_box(f"❌ TRADE REMOVED. Reason: {reason}", tone="danger")
+    elif approved_trade:
         render_status_box("✅ Trade setup passed the quality checks and is eligible for display.", tone="success")
     elif has_mismatch:
         render_status_box("⚠️ The setup has a feed synchronization warning. Execution is blocked, but analysis is displayed.", tone="warning")
@@ -1583,6 +2088,90 @@ with overview_tab:
         </div>
         """
         render_content_card("Signal Summary", summary_html)
+
+with mtf_tab:
+    if hasattr(bundle, "mtf_analysis") and bundle.mtf_analysis:
+        st.markdown('<div class="section-title">Multi-Timeframe Analysis Grid</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-caption">Simultaneous analysis of 1M, 5M, 15M, 1H (60M), and 1D timeframes. Higher timeframes dictate the macro trend, while lower timeframes confirm entry momentum.</div>', unsafe_allow_html=True)
+
+        rows = []
+        for tf, data in bundle.mtf_analysis.items():
+            # Color trend
+            trend_val = data["trend"].upper()
+            trend_color = "#16a34a" if data["trend"] == "bullish" else ("#dc2626" if data["trend"] == "bearish" else "#64748b")
+            trend_badge = f'<span style="padding:4px 8px;border-radius:8px;font-size:11px;font-weight:700;background:{trend_color}22;color:{trend_color};border:1px solid {trend_color}44;">{trend_val}</span>'
+
+            # Color signal
+            sig_val = data["signal"]
+            sig_color = {"BUY": "#16a34a", "STRONG_BUY": "#15803d", "SELL": "#dc2626", "STRONG_SELL": "#b91c1c"}.get(sig_val, "#64748b")
+            sig_badge = f'<span style="padding:4px 8px;border-radius:8px;font-size:11px;font-weight:700;background:{sig_color}22;color:{sig_color};border:1px solid {sig_color}44;">{sig_val}</span>'
+
+            # EMA Status
+            ema_val = data["ema_status"]
+            ema_color = "#16a34a" if ema_val == "Above EMAs" else ("#dc2626" if ema_val == "Below EMAs" else "#f59e0b")
+            ema_badge = f'<span style="color:{ema_color};font-weight:600;">{ema_val}</span>'
+
+            # RSI Status
+            rsi_val = data["rsi_status"]
+            rsi_color = "#dc2626" if "Overbought" in rsi_val else ("#16a34a" if "Oversold" in rsi_val else "#475569")
+            rsi_badge = f'<span style="color:{rsi_color};font-weight:600;">{rsi_val}</span>'
+
+            # MACD Status
+            macd_val = data["macd_status"]
+            macd_color = "#16a34a" if macd_val == "Bullish Cross" else ("#dc2626" if macd_val == "Bearish Cross" else "#64748b")
+            macd_badge = f'<span style="color:{macd_color};font-weight:600;">{macd_val}</span>'
+
+            # Conf
+            conf_val = data["confidence"]
+            conf_gauge = f"""
+            <div style=\'display:flex;align-items:center;gap:6px;min-width:100px;\'>
+              <div style=\'flex:1;background:rgba(148,163,184,0.18);border-radius:999px;height:6px;overflow:hidden;\'>
+                <div style=\'width:{conf_val:.0f}%;height:100%;background:{sig_color};border-radius:999px;\'></div>
+              </div>
+              <span style=\'font-size:11px;font-weight:700;color:{sig_color};\'>{conf_val:.1f}%</span>
+            </div>
+            """
+
+            tf_display = f"1m (1-Minute)" if tf == "1" else f"5m (5-Minute)" if tf == "5" else f"15m (15-Minute)" if tf == "15" else f"1h (1-Hour)" if tf == "60" else f"1d (1-Day)" if tf == "D" else f"{tf}m"
+
+            rows.append(f"""
+            <tr style="border-bottom: 1px solid rgba(148, 163, 184, 0.12); transition: background-color 0.2s;">
+              <td style="padding: 12px 16px; font-weight: 700; color: #0f172a;">{tf_display}</td>
+              <td style="padding: 12px 16px;">{trend_badge}</td>
+              <td style="padding: 12px 16px; font-size: 13px; font-weight: 600; color: #334155;">{data["phase"].title()}</td>
+              <td style="padding: 12px 16px; font-size: 13px;">{ema_badge}</td>
+              <td style="padding: 12px 16px; font-size: 13px;">{rsi_badge}</td>
+              <td style="padding: 12px 16px; font-size: 13px;">{macd_badge}</td>
+              <td style="padding: 12px 16px;">{sig_badge}</td>
+              <td style="padding: 12px 16px;">{conf_gauge}</td>
+            </tr>
+            """)
+
+        table_html = f"""
+        <div style="border: 1px solid rgba(148, 163, 184, 0.24); border-radius: 20px; overflow: hidden; background: white; box-shadow: 0 16px 35px rgba(15, 23, 42, 0.08); margin-bottom: 1.5rem;">
+          <table style="width: 100%; border-collapse: collapse; text-align: left; font-family: inherit;">
+            <thead>
+              <tr style="background: #f8fafc; border-bottom: 1.5px solid rgba(148, 163, 184, 0.24);">
+                <th style="padding: 14px 16px; font-weight: 700; color: #475569; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">Timeframe</th>
+                <th style="padding: 14px 16px; font-weight: 700; color: #475569; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">Trend Bias</th>
+                <th style="padding: 14px 16px; font-weight: 700; color: #475569; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">Structure Phase</th>
+                <th style="padding: 14px 16px; font-weight: 700; color: #475569; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">EMA Trend</th>
+                <th style="padding: 14px 16px; font-weight: 700; color: #475569; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">RSI Indicator</th>
+                <th style="padding: 14px 16px; font-weight: 700; color: #475569; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">MACD Momentum</th>
+                <th style="padding: 14px 16px; font-weight: 700; color: #475569; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">Timeframe Signal</th>
+                <th style="padding: 14px 16px; font-weight: 700; color: #475569; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;">Confidence</th>
+              </tr>
+            </thead>
+            <tbody>
+              {"".join(rows)}
+            </tbody>
+          </table>
+        </div>
+        """
+        cleaned_table_html = "\n".join(line.strip() for line in table_html.splitlines())
+        st.markdown(cleaned_table_html, unsafe_allow_html=True)
+    else:
+        st.info("Multi-timeframe data is not available. Please make sure all target feeds are active.")
 
 with structure_tab:
     structure = bundle.chart_payload.get("overlays", {}).get("structure", {})
@@ -2111,14 +2700,50 @@ with history_tab:
     all_records = signal_repository.read_recent(limit=500)
 
     # Only show real directional trade signals
-    trade_records = [
+    base_trade_records = [
         r for r in all_records
         if r.get("signal") in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]
     ]
 
-    if not trade_records:
+    if not base_trade_records:
         st.info("No trade signals recorded yet. Run an analysis to start logging BUY/SELL signals.")
     else:
+        # Resolve active date range from session state or default values
+        today = _dt.date.today()
+        default_start = today - _dt.timedelta(days=30)
+        
+        if "date_filter_val" not in st.session_state:
+            st.session_state.date_filter_val = (default_start, today)
+            
+        if "history_date_filter" in st.session_state and st.session_state["history_date_filter"] is not None:
+            date_range = st.session_state["history_date_filter"]
+        else:
+            date_range = st.session_state.date_filter_val
+            
+        # Handle streamlit date range tuple lengths (can be 1 or 2 during selection)
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            filter_start, filter_end = date_range
+        elif isinstance(date_range, tuple) and len(date_range) == 1:
+            filter_start = date_range[0]
+            filter_end = today
+        else:
+            filter_start = date_range
+            filter_end = today
+
+        # Filter base_trade_records by date range
+        trade_records = []
+        for r in base_trade_records:
+            raw_open = r.get("logged_at", "")
+            if raw_open:
+                try:
+                    open_date = _dt.datetime.fromisoformat(raw_open.replace("Z", "+00:00")).date()
+                    if filter_start <= open_date <= filter_end:
+                        trade_records.append(r)
+                except Exception:
+                    trade_records.append(r)
+            else:
+                trade_records.append(r)
+
         # ── Counters ──────────────────────────────────────────────────────
         tp_hit_count  = sum(1 for r in trade_records if r.get("outcome") == "TP_HIT")
         sl_hit_count  = sum(1 for r in trade_records if r.get("outcome") == "SL_HIT")
@@ -2167,97 +2792,118 @@ with history_tab:
         """
         render_content_card("Trade Performance Summary", stat_html)
 
-        # ── Build table rows ──────────────────────────────────────────────
-        rows = []
-        for r in trade_records:
-            # Opened timestamp
-            raw_open = r.get("logged_at", "")
-            try:
-                open_dt  = _dt.datetime.fromisoformat(raw_open.replace("Z", "+00:00"))
-                open_str = open_dt.strftime("%Y-%m-%d %H:%M UTC")
-            except Exception:
-                open_str = raw_open[:16] if len(raw_open) >= 16 else (raw_open or "--")
-                open_dt  = None
+        # Date filter UI
+        col1, col2, col3 = st.columns([1.5, 0.8, 2.7])
+        with col1:
+            st.date_input(
+                "Filter History by Date",
+                value=st.session_state.date_filter_val,
+                max_value=today,
+                key="history_date_filter"
+            )
+        with col2:
+            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+            if st.button("Reset Filter", type="secondary", use_container_width=True):
+                st.session_state.date_filter_val = (default_start, today)
+                if "history_date_filter" in st.session_state:
+                    del st.session_state["history_date_filter"]
+                st.rerun()
 
-            # Closed timestamp & duration
-            raw_close = r.get("closed_at", "")
-            if raw_close:
+        if not trade_records:
+            st.info("No trade signals found in the selected date range.")
+        else:
+
+            # ── Build table rows ──────────────────────────────────────────────
+            rows = []
+            for r in trade_records:
+                # Opened timestamp
+                raw_open = r.get("logged_at", "")
                 try:
-                    close_dt  = _dt.datetime.fromisoformat(raw_close.replace("Z", "+00:00"))
-                    close_str = close_dt.strftime("%Y-%m-%d %H:%M UTC")
-                    if open_dt:
-                        total_min    = int((close_dt - open_dt).total_seconds() // 60)
-                        duration_str = (f"{total_min // 60}h {total_min % 60}m"
-                                        if total_min >= 60 else f"{total_min}m")
-                    else:
-                        duration_str = "--"
+                    open_dt  = _dt.datetime.fromisoformat(raw_open.replace("Z", "+00:00"))
+                    open_str = open_dt.strftime("%Y-%m-%d %H:%M UTC")
                 except Exception:
-                    close_str    = raw_close[:16] if len(raw_close) >= 16 else "--"
-                    duration_str = "--"
-            else:
-                close_str    = "—"
-                duration_str = "Active"
+                    open_str = raw_open[:16] if len(raw_open) >= 16 else (raw_open or "--")
+                    open_dt  = None
 
-            # Status
-            outcome    = r.get("outcome", "OPEN") or "OPEN"
-            status_map = {
-                "OPEN":                    "🔵 Active",
-                "TP_HIT":                  "✅ TP Hit",
-                "SL_HIT":                  "❌ SL Hit",
-                "CLOSED_BY_SIGNAL_CHANGE": "🔄 Signal Changed",
+                # Closed timestamp & duration
+                raw_close = r.get("closed_at", "")
+                if raw_close:
+                    try:
+                        close_dt  = _dt.datetime.fromisoformat(raw_close.replace("Z", "+00:00"))
+                        close_str = close_dt.strftime("%Y-%m-%d %H:%M UTC")
+                        if open_dt:
+                            total_min    = int((close_dt - open_dt).total_seconds() // 60)
+                            duration_str = (f"{total_min // 60}h {total_min % 60}m"
+                                            if total_min >= 60 else f"{total_min}m")
+                        else:
+                            duration_str = "--"
+                    except Exception:
+                        close_str    = raw_close[:16] if len(raw_close) >= 16 else "--"
+                        duration_str = "--"
+                else:
+                    close_str    = "—"
+                    duration_str = "Active"
+
+                # Status
+                outcome    = r.get("outcome", "OPEN") or "OPEN"
+                status_map = {
+                    "OPEN":                    "🔵 Active",
+                    "TP_HIT":                  "✅ TP Hit",
+                    "SL_HIT":                  "❌ SL Hit",
+                    "CLOSED_BY_SIGNAL_CHANGE": "🔄 Signal Changed",
+                }
+                status_str = status_map.get(outcome, f"⏳ {outcome}")
+
+                sig    = r.get("signal", "--")
+                conf   = float(r.get("confidence", 0) or 0)
+                rr_val = r.get("rr_ratio") or 0
+
+                rows.append({
+                    "Opened":     open_str,
+                    "Closed":     close_str,
+                    "Duration":   duration_str,
+                    "Currency":   r.get("symbol", "--"),
+                    "Trade":      sig,
+                    "Confidence": f"{conf:.1f}%",
+                    "Entry":      format_price(r.get("entry")),
+                    "Stop Loss":  format_price(r.get("stop_loss")),
+                    "TP1":        format_price(r.get("tp1")),
+                    "TP2":        format_price(r.get("tp2")),
+                    "R : R":      f"{float(rr_val):.2f}" if rr_val else "--",
+                    "Status":     status_str,
+                })
+
+            hist_df = pd.DataFrame(rows)
+
+            # ── Styling ───────────────────────────────────────────────────────
+            _SIG_COLORS = {
+                "BUY":         "color: #15803d; font-weight: 700",
+                "STRONG_BUY":  "color: #166534; font-weight: 800",
+                "SELL":        "color: #b91c1c; font-weight: 700",
+                "STRONG_SELL": "color: #991b1b; font-weight: 800",
             }
-            status_str = status_map.get(outcome, f"⏳ {outcome}")
 
-            sig    = r.get("signal", "--")
-            conf   = float(r.get("confidence", 0) or 0)
-            rr_val = r.get("rr_ratio") or 0
+            def _style_cell(val):
+                v = str(val)
+                if v in _SIG_COLORS:
+                    return _SIG_COLORS[v]
+                if "TP Hit" in v:
+                    return "color: #15803d; font-weight: 700"
+                if "SL Hit" in v:
+                    return "color: #b91c1c; font-weight: 700"
+                if "Active" in v:
+                    return "color: #6d28d9; font-weight: 700"
+                if "Signal Changed" in v:
+                    return "color: #b45309; font-weight: 700"
+                return ""
 
-            rows.append({
-                "Opened":     open_str,
-                "Closed":     close_str,
-                "Duration":   duration_str,
-                "Currency":   r.get("symbol", "--"),
-                "Trade":      sig,
-                "Confidence": f"{conf:.1f}%",
-                "Entry":      format_price(r.get("entry")),
-                "Stop Loss":  format_price(r.get("stop_loss")),
-                "TP1":        format_price(r.get("tp1")),
-                "TP2":        format_price(r.get("tp2")),
-                "R : R":      f"{float(rr_val):.2f}" if rr_val else "--",
-                "Status":     status_str,
-            })
+            try:
+                styled = hist_df.style.map(_style_cell, subset=["Trade", "Status"])
+            except AttributeError:
+                styled = hist_df.style.applymap(_style_cell, subset=["Trade", "Status"])  # type: ignore[attr-defined]
 
-        hist_df = pd.DataFrame(rows)
-
-        # ── Styling ───────────────────────────────────────────────────────
-        _SIG_COLORS = {
-            "BUY":         "color: #15803d; font-weight: 700",
-            "STRONG_BUY":  "color: #166534; font-weight: 800",
-            "SELL":        "color: #b91c1c; font-weight: 700",
-            "STRONG_SELL": "color: #991b1b; font-weight: 800",
-        }
-
-        def _style_cell(val):
-            v = str(val)
-            if v in _SIG_COLORS:
-                return _SIG_COLORS[v]
-            if "TP Hit" in v:
-                return "color: #15803d; font-weight: 700"
-            if "SL Hit" in v:
-                return "color: #b91c1c; font-weight: 700"
-            if "Active" in v:
-                return "color: #6d28d9; font-weight: 700"
-            if "Signal Changed" in v:
-                return "color: #b45309; font-weight: 700"
-            return ""
-
-        try:
-            styled = hist_df.style.map(_style_cell, subset=["Trade", "Status"])
-        except AttributeError:
-            styled = hist_df.style.applymap(_style_cell, subset=["Trade", "Status"])  # type: ignore[attr-defined]
-
-        render_content_card(
-            f"📋 Trade Signal Log — {total_trades} position(s) · {open_count} active",
-            "One row per unique trade. Active positions stay open until SL/TP is hit or the signal direction flips."
-        )
-        st.dataframe(styled, use_container_width=True, height=540)
+            render_content_card(
+                f"📋 Trade Signal Log — {total_trades} position(s) · {open_count} active",
+                "One row per unique trade. Active positions stay open until SL/TP is hit or the signal direction flips."
+            )
+            st.dataframe(styled, use_container_width=True, height=540)

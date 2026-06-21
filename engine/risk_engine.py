@@ -28,8 +28,7 @@ class RiskEngine:
         candles = candles.sort_values("timestamp").reset_index(drop=True)
         timeframe_minutes = TIMEFRAME_TO_MINUTES.get(timeframe, 5)
         expected_delta_seconds = timeframe_minutes * 60
-        # Only check the last 20 candles for gaps so we don't accidentally count weekends or overnight closures
-        recent_deltas = candles["timestamp"].tail(20).diff().dropna().dt.total_seconds()
+        recent_deltas = candles["timestamp"].diff().tail(20).dt.total_seconds()
         missing_candle_gaps = int((recent_deltas > expected_delta_seconds * 1.5).sum()) if not recent_deltas.empty else 0
 
         last_ts = candles["timestamp"].iloc[-1]

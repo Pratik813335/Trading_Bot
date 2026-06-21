@@ -101,6 +101,7 @@ class AnalysisBundle:
     trade_payload: dict[str, Any]
     news_signals: list[Any] = field(default_factory=list)   # list[NewsSignal]
     session_signal: Any | None = None                        # SessionSignal | None
+    mtf_analysis: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

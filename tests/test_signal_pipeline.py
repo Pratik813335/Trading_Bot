@@ -45,7 +45,7 @@ def test_feed_quality_rejects_stale_data():
 
 def test_feed_quality_rejects_missing_candles():
     engine = RiskEngine()
-    df = build_df()
+    df = build_df(rows=150)
     df.loc[10, "timestamp"] = df.loc[9, "timestamp"] + timedelta(minutes=25)
     metadata = FeedMetadata(
         symbol="EURUSD",
@@ -64,9 +64,9 @@ def test_feed_quality_rejects_missing_candles():
 def test_feed_quality_rejects_large_gap_count():
     engine = RiskEngine()
     df = build_df(rows=40)
-    df.loc[10, "timestamp"] = df.loc[9, "timestamp"] + timedelta(minutes=25)
-    df.loc[20, "timestamp"] = df.loc[19, "timestamp"] + timedelta(minutes=25)
-    df.loc[30, "timestamp"] = df.loc[29, "timestamp"] + timedelta(minutes=25)
+    df.loc[22, "timestamp"] = df.loc[21, "timestamp"] + timedelta(minutes=25)
+    df.loc[28, "timestamp"] = df.loc[27, "timestamp"] + timedelta(minutes=25)
+    df.loc[34, "timestamp"] = df.loc[33, "timestamp"] + timedelta(minutes=25)
     metadata = FeedMetadata(
         symbol="EURUSD",
         timeframe="5",

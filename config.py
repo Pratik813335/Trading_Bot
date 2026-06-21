@@ -28,7 +28,7 @@ RISK_PER_TRADE = 0.02
 MIN_CONFIRMATION_CONFIDENCE = 45
 
 SYMBOLS = ["XAUUSD", "EURUSD", "GBPUSD" , "AUDUSD" ,"USDJPY", "USDCHF", "USDCAD"]
-TIMEFRAMES = ["5", "15", "30", "60", "240", "D"]
+TIMEFRAMES = ["1", "5", "15", "30", "60", "240", "D"]
 
 ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "").strip()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
@@ -44,6 +44,7 @@ NEWS_MAX_AGE_MINUTES = 180     # risk gate: ignore events older than this
 
 
 ALPHA_VANTAGE_INTERVALS = {
+    "1": "1min",
     "5": "5min",
     "15": "15min",
     "30": "30min",

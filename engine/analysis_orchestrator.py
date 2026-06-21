@@ -191,6 +191,244 @@ class AnalysisOrchestrator:
             structure_state=structure_state,
             zones=zones,
         )
+
+        # --- Active Trade Invalidation Check ---
+        active = self.signal_repository.get_active_position(symbol)
+        invalidation_reason = None
+        
+        if active is not None:
+            active_dir = self._signal_direction(active.get("signal", ""))
+            active_sl = float(active.get("stop_loss") or 0.0)
+            active_tp1 = float(active.get("tp1") or 0.0)
+            
+            last_candle = candles.iloc[-1]
+            current_close = float(last_candle["close"])
+            current_high = float(last_candle["high"])
+            current_low = float(last_candle["low"])
+            current_open = float(last_candle["open"])
+            atr = float(last_candle["atr14"]) if "atr14" in last_candle else 0.0001
+            
+            # 1. Confirmation Failure
+            if signal.signal in ["NEUTRAL", "HOLD", "NO_TRADE"]:
+                invalidation_reason = f"Confirmation Failure: Primary signal is now {signal.signal}"
+            
+            # 2. Opposite Market Structure
+            if invalidation_reason is None:
+                if active_dir == "BUY":
+                    if structure_state.trend == "bearish" or structure_state.bos == "bearish_bos":
+                        invalidation_reason = "Opposite Market Structure: Bearish trend or BOS detected"
+                elif active_dir == "SELL":
+                    if structure_state.trend == "bullish" or structure_state.bos == "bullish_bos":
+                        invalidation_reason = "Opposite Market Structure: Bullish trend or BOS detected"
+
+            # 3. Indicator Reversal
+            if invalidation_reason is None:
+                macd = indicator_snapshot.get("macd")
+                macd_sig = indicator_snapshot.get("macd_signal")
+                ema50 = indicator_snapshot.get("ema50")
+                
+                if active_dir == "BUY":
+                    if (macd is not None and macd_sig is not None and macd < macd_sig) or \
+                       (ema50 is not None and current_close < ema50):
+                        invalidation_reason = "Indicator Reversal: Momentum shifted bearish (MACD cross or below EMA50)"
+                elif active_dir == "SELL":
+                    if (macd is not None and macd_sig is not None and macd > macd_sig) or \
+                       (ema50 is not None and current_close > ema50):
+                        invalidation_reason = "Indicator Reversal: Momentum shifted bullish (MACD cross or above EMA50)"
+
+            # 4. Fake Breakout / Trap Detection
+            if invalidation_reason is None:
+                if active_dir == "BUY" and structure_state.liquidity_sweep == "liquidity_grab_sell":
+                    invalidation_reason = "Fake Breakout: Buy-side liquidity sweep & rejection detected"
+                elif active_dir == "SELL" and structure_state.liquidity_sweep == "liquidity_grab_buy":
+                    invalidation_reason = "Fake Breakout: Sell-side liquidity sweep & reclaim detected"
+
+            # 5. Strong Opposite Momentum
+            if invalidation_reason is None:
+                candle_body = abs(current_close - current_open)
+                if atr > 0.0 and candle_body > atr * 2.5:
+                    if active_dir == "BUY" and current_close < current_open:
+                        invalidation_reason = "Strong Opposite Momentum: Large bearish candle body against trade"
+                    elif active_dir == "SELL" and current_close > current_open:
+                        invalidation_reason = "Strong Opposite Momentum: Large bullish candle body against trade"
+
+            # 6. Time-Based Invalidation (sideways/choppy after entry)
+            if invalidation_reason is None:
+                logged_at_str = active.get("logged_at", "")
+                if logged_at_str:
+                    try:
+                        from datetime import datetime, timezone
+                        from data.timeframe_builder import TIMEFRAME_TO_MINUTES
+                        logged_dt = datetime.fromisoformat(logged_at_str)
+                        time_minutes = TIMEFRAME_TO_MINUTES.get(timeframe, 5)
+                        elapsed_seconds = (datetime.now(timezone.utc) - logged_dt).total_seconds()
+                        if elapsed_seconds > (time_minutes * 60 * 15):
+                            entry_price = float(active.get("entry") or current_close)
+                            if abs(current_close - entry_price) <= atr * 0.8:
+                                invalidation_reason = "Time-Based Invalidation: Market became sideways/choppy post-entry"
+                    except Exception:
+                        pass
+
+            # 7. Risk Protection
+            if invalidation_reason is None and active_sl > 0.0:
+                if active_dir == "BUY" and current_close - active_sl <= atr * 0.2:
+                    invalidation_reason = "Risk Protection: Price is too close to Stop Loss without reaction"
+                elif active_dir == "SELL" and active_sl - current_close <= atr * 0.2:
+                    invalidation_reason = "Risk Protection: Price is too close to Stop Loss without reaction"
+
+        if invalidation_reason is not None:
+            opposite_signal_confirmed = False
+            if active_dir == "BUY" and signal.signal in ["SELL", "STRONG_SELL"]:
+                opposite_signal_confirmed = True
+            elif active_dir == "SELL" and signal.signal in ["BUY", "STRONG_BUY"]:
+                opposite_signal_confirmed = True
+
+            signal.signal = "TRADE_REMOVED"
+            signal.stop_loss = 0.0
+            signal.tp1 = 0.0
+            signal.tp2 = 0.0
+            signal.rr_ratio = 0.0
+            signal.reasons = [invalidation_reason] + [r for r in signal.reasons if r != "ANALYSIS BLOCKED"]
+            if opposite_signal_confirmed:
+                signal.reasons.append("Suggest Reverse Trade: High-probability opposite setup confirmed")
+            signal.warnings = ["❌ TRADE REMOVED: " + invalidation_reason] + list(signal.warnings)
+            
+            # Close the position in the repository
+            self.signal_repository.close_position(active["logged_at"], "TRADE_REMOVED")
+
+        # --- Multi-Timeframe Analysis ---
+        target_timeframes = ["1", "5", "15", "60", "D"]
+        mtf_results = {}
+        
+        for tf in target_timeframes:
+            try:
+                if tf == timeframe:
+                    tf_market_frame = market_frame
+                else:
+                    tf_market_frame = self.market_feed.fetch(symbol, tf)
+                
+                if tf_market_frame is not None and not tf_market_frame.candles.empty:
+                    tf_candles, tf_indicators = self.indicator_engine.enrich(tf_market_frame.candles)
+                    tf_structure = self.structure_engine.analyze(tf_candles)
+                    tf_zones = self.zone_engine.analyze(tf_candles, tf_structure)
+                    tf_sync = self.signal_engine.risk_engine.evaluate_feed_quality(
+                        symbol, tf, tf_candles, tf_market_frame.metadata
+                    )
+                    tf_signal = self.signal_engine.generate(
+                        symbol=symbol,
+                        timeframe=tf,
+                        candles=tf_candles,
+                        metadata=tf_market_frame.metadata,
+                        sync_status=tf_sync,
+                        indicators=tf_indicators,
+                        structure_state=tf_structure,
+                        zones=tf_zones,
+                    )
+                    mtf_results[tf] = {
+                        "signal": tf_signal,
+                        "indicators": tf_indicators,
+                        "structure": tf_structure,
+                        "zones": tf_zones,
+                        "sync": tf_sync,
+                        "candles": tf_candles,
+                    }
+            except Exception as e:
+                print(f"Error analyzing timeframe {tf}: {e}")
+
+        # Multi-timeframe rules evaluation
+        primary_dir = None
+        if signal.signal in ["BUY", "STRONG_BUY"]:
+            primary_dir = "BUY"
+        elif signal.signal in ["SELL", "STRONG_SELL"]:
+            primary_dir = "SELL"
+
+        if primary_dir is not None:
+            htf_macro_trend = mtf_results.get("D", {}).get("structure", {}).trend if "D" in mtf_results else None
+            htf_mid_trend = mtf_results.get("60", {}).get("structure", {}).trend if "60" in mtf_results else None
+
+            conflict_count = 0
+            alignment_count = 0
+
+            if htf_macro_trend and htf_macro_trend != "ranging":
+                if (primary_dir == "BUY" and htf_macro_trend == "bearish") or (primary_dir == "SELL" and htf_macro_trend == "bullish"):
+                    conflict_count += 1
+                elif (primary_dir == "BUY" and htf_macro_trend == "bullish") or (primary_dir == "SELL" and htf_macro_trend == "bearish"):
+                    alignment_count += 1
+
+            if htf_mid_trend and htf_mid_trend != "ranging":
+                if (primary_dir == "BUY" and htf_mid_trend == "bearish") or (primary_dir == "SELL" and htf_mid_trend == "bullish"):
+                    conflict_count += 1
+                elif (primary_dir == "BUY" and htf_mid_trend == "bullish") or (primary_dir == "SELL" and htf_mid_trend == "bearish"):
+                    alignment_count += 1
+
+            if conflict_count == 2:
+                signal.signal = "NO_TRADE"
+                signal.stop_loss = 0.0
+                signal.tp1 = 0.0
+                signal.tp2 = 0.0
+                signal.rr_ratio = 0.0
+                signal.reasons = ["HTF Bias Conflict"] + [r for r in signal.reasons if r != "ANALYSIS BLOCKED"]
+                signal.warnings = ["No trade: higher timeframe bias strongly conflicts with entry direction"] + list(signal.warnings)
+            elif conflict_count == 1:
+                signal.confidence = max(0.0, signal.confidence - 15.0)
+                signal.warnings = ["Multi-timeframe conflict: Higher timeframe bias conflicts with entry direction"] + list(signal.warnings)
+            elif alignment_count == 2:
+                signal.confidence = min(95.0, signal.confidence + 10.0)
+                signal.reasons = [f"HTF alignment (1H & 1D {'Bullish' if primary_dir == 'BUY' else 'Bearish'})"] + list(signal.reasons)
+
+        # Build multi-timeframe analysis summaries
+        mtf_analysis = {}
+        for tf in target_timeframes:
+            if tf in mtf_results:
+                res = mtf_results[tf]
+                tf_sig = res["signal"]
+                tf_ind = res["indicators"]
+                tf_struct = res["structure"]
+                tf_candles = res["candles"]
+                
+                price = float(tf_candles["close"].iloc[-1])
+                
+                ema50 = tf_ind.get("ema50")
+                ema200 = tf_ind.get("ema200")
+                if ema50 is not None and ema200 is not None:
+                    if price > ema50 and price > ema200:
+                        ema_status = "Above EMAs"
+                    elif price < ema50 and price < ema200:
+                        ema_status = "Below EMAs"
+                    else:
+                        ema_status = "Between EMAs"
+                else:
+                    ema_status = "N/A"
+
+                rsi = tf_ind.get("rsi14")
+                if rsi is not None:
+                    if rsi > 70:
+                        rsi_status = f"Overbought ({rsi:.1f})"
+                    elif rsi < 30:
+                        rsi_status = f"Oversold ({rsi:.1f})"
+                    else:
+                        rsi_status = f"Neutral ({rsi:.1f})"
+                else:
+                    rsi_status = "N/A"
+
+                macd = tf_ind.get("macd")
+                macd_sig = tf_ind.get("macd_signal")
+                if macd is not None and macd_sig is not None:
+                    macd_status = "Bullish Cross" if macd > macd_sig else "Bearish Cross"
+                else:
+                    macd_status = "N/A"
+
+                mtf_analysis[tf] = {
+                    "timeframe": tf,
+                    "signal": tf_sig.signal,
+                    "confidence": tf_sig.confidence,
+                    "trend": tf_struct.trend,
+                    "phase": tf_struct.phase,
+                    "ema_status": ema_status,
+                    "rsi_status": rsi_status,
+                    "macd_status": macd_status,
+                }
+
         provisional_ai = self.ai_service.explain(signal)
         provisional_trade_payload = self._build_trade_payload(signal, provisional_ai, zones)
         ai_explanation = self.ai_service.explain(
@@ -242,6 +480,7 @@ class AnalysisOrchestrator:
             trade_payload=trade_payload,
             news_signals=[],  # populated separately via analyze_news()
             session_signal=session_signal,
+            mtf_analysis=mtf_analysis,
         )
 
     def analyze_news(

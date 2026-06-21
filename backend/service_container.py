@@ -1,4 +1,4 @@
-from backend.market_feed import AlphaVantageProvider, OandaProvider, SampleDataProvider, UnifiedMarketFeed, YahooProvider
+from backend.market_feed import AlphaVantageProvider, MT5Provider, OandaProvider, SampleDataProvider, UnifiedMarketFeed, YahooProvider
 from backend.forex_factory_feed import ForexFactoryFeed
 from charts.tradingview_renderer import TradingViewRenderer
 from engine.analysis_orchestrator import AnalysisOrchestrator
@@ -17,6 +17,7 @@ def build_container():
     cache = InMemoryTTLCache(ttl_seconds=30)
     market_feed = UnifiedMarketFeed(
         providers=[
+            MT5Provider(),
             OandaProvider(),
             YahooProvider(),
             AlphaVantageProvider(),

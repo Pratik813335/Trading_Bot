@@ -4,6 +4,7 @@ import pandas as pd
 
 
 TIMEFRAME_TO_MINUTES = {
+    "1": 1,
     "5": 5,
     "15": 15,
     "30": 30,

@@ -4,6 +4,7 @@ from datetime import datetime
 from config import MT5_LOGIN, MT5_PASSWORD, MT5_SERVER
 
 MT5_TIMEFRAMES = {
+    "1": mt5.TIMEFRAME_M1,
     "5": mt5.TIMEFRAME_M5,
     "15": mt5.TIMEFRAME_M15,
     "30": mt5.TIMEFRAME_M30,
