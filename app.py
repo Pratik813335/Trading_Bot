@@ -30,6 +30,7 @@ def init_session_state():
         "analysis_bundle": None,
         "analysis_symbol": "XAUUSD",
         "analysis_timeframe": "5",
+        "selected_strategy": "Auto (Session-Aware)",
         "chart_fullscreen": False,
         "chart_engine": "Lightweight Charts (Overlay)",
         # News Intel cache
@@ -1968,24 +1969,38 @@ forex_factory_feed = container.get("forex_factory_feed")
 start_panel_api_server()
 
 with st.container():
-    control_cols = st.columns([1.2, 1.0, 1.2], gap="medium")
+    control_cols = st.columns([1.0, 0.8, 1.5, 1.0], gap="medium")
     with control_cols[0]:
         symbol = st.selectbox("Symbol", SYMBOLS, index=SYMBOLS.index(st.session_state.analysis_symbol))
     with control_cols[1]:
         timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=TIMEFRAMES.index(st.session_state.analysis_timeframe))
     with control_cols[2]:
+        strategies = ["Auto (Session-Aware)", "Trend Following", "Quick Scalper", "Range Trader", "Breakout Trader", "Carry Trader"]
+        selected_strategy = st.selectbox(
+            "Strategy Selection",
+            strategies,
+            index=strategies.index(st.session_state.get("selected_strategy", "Auto (Session-Aware)"))
+        )
+    with control_cols[3]:
         st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
         run_analysis = st.button("Run Analysis", type="primary", use_container_width=True)
 
-# Auto-run analysis if the bundle is None, or if selected symbol/timeframe changed, or on manual click
+# Auto-run analysis if the bundle is None, or if selected symbol/timeframe/strategy changed, or on manual click
 if (st.session_state.analysis_bundle is None or 
     st.session_state.analysis_symbol != symbol or 
     st.session_state.analysis_timeframe != timeframe or 
+    st.session_state.get("selected_strategy") != selected_strategy or
     run_analysis):
     
+    st.session_state.selected_strategy = selected_strategy
+    forced = None if selected_strategy == "Auto (Session-Aware)" else selected_strategy
+    orchestrator.forced_strategy = forced
+    if _global_orchestrator:
+        _global_orchestrator.forced_strategy = forced
+        
     bundle = None
     with st.spinner("⏳ Analyzing market structure and executing rule checks..."):
-        bundle = orchestrator.analyze(symbol, timeframe)
+        bundle = orchestrator.analyze(symbol, timeframe, forced_strategy=forced)
 
     if bundle is None:
         st.error("Unable to build analysis bundle from the configured feeds.")

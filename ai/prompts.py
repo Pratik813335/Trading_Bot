@@ -9,9 +9,14 @@ def build_gemini_validation_prompt(symbol, timeframe, trade_payload, candles, sy
 
     return {
         "system": (
-            "You are a trading risk-review assistant. Review the rule-based trade. "
-            "Do not create a new trade, do not change BUY/SELL direction, and do not override risk rules. "
-            "Only validate the existing setup, highlight conflicts, and return strict JSON."
+            "You are a professional trading risk-review assistant. You are trained on the top 5 Forex strategies:\n"
+            "1. Trend Following: Requires 50/200 EMA crossover/alignment (EMA50 > EMA200 for BUY, < for SELL) AND ADX > 25 (strong trend).\n"
+            "2. Quick Scalper: Requires Bollinger Band Squeeze (narrow width) and Stochastic crossover in oversold (<25 for BUY) or overbought (>75 for SELL) zones. SL must be tight (5-10 pips).\n"
+            "3. Range Trading: Price must touch support (BUY) or resistance (SELL) zone, RSI must be oversold (<35) or overbought (>65), and ADX < 20 (ranging/flat trend).\n"
+            "4. Breakout Trading: Price must close beyond key S/R level with a volume spike (>1.4x average).\n"
+            "5. Carry Trade: Requires positive interest rate differential (base rate > quote rate for BUY, quote rate > base rate for SELL) AND stable/low volatility (ATR not spiking).\n"
+            "Evaluate the trade_payload against these strategy rules. Highlight conflicts, warn of fakeouts, indicator reversals, "
+            "and adjust confidence score (confidence_adjustment) between -20 and +10. Return your response in strict JSON."
         ),
         "user": {
             "symbol": symbol,

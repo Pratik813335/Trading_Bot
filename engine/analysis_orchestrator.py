@@ -172,7 +172,7 @@ class AnalysisOrchestrator:
             "chart_sync": sync_status.match_percentage,
         }
 
-    def analyze(self, symbol, timeframe):
+    def analyze(self, symbol, timeframe, forced_strategy=None):
         market_frame = self.market_feed.fetch(symbol, timeframe)
         if market_frame is None:
             return None
@@ -455,6 +455,7 @@ class AnalysisOrchestrator:
         # ── Session analysis ─────────────────────────────────────────
         try:
             session_state = self.session_engine.detect()
+            forced = forced_strategy or getattr(self, "forced_strategy", None)
             session_signal = self.session_strategy_engine.analyze(
                 session=session_state,
                 symbol=symbol,
@@ -462,6 +463,7 @@ class AnalysisOrchestrator:
                 indicators=indicator_snapshot,
                 zones=zones,
                 structure=structure_state,
+                forced_strategy=forced,
             )
         except Exception:
             session_signal = None

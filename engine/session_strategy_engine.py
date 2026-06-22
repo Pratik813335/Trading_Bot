@@ -3,18 +3,17 @@ engine/session_strategy_engine.py
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Session-Aware Strategy Engine.
 
-Applies session-specific trading rules:
-  - Asian  : Range strategy (buy support / sell resistance)
-  - London : Breakout + Trend (Asian range breakout + EMA confirmation)
-  - NY     : Reversal + Continuation (liquidity grabs, price action, news)
-  - Overlap: All strategies — scores all and returns highest-confidence
-
-Minimum 2 confluences required for any actionable signal.
-Output: SessionSignal with mandatory output fields.
+Applies session-specific trading rules deeply implementing the Top 5 Forex Strategies:
+  - Trend Following (EMA Crossover + ADX > 25)
+  - Scalping (Bollinger Band Squeeze + Stochastic)
+  - Range Trading (S/R Bounce + RSI + ADX < 20)
+  - Breakout Trading (S/R Breakout + Volume Spike)
+  - Carry Trade (Interest Rate Differential)
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -32,7 +31,7 @@ from engine.session_engine import SessionEngine, SessionState
 class SessionSignal:
     pair: str
     session: str                   # Asian | London | New York | Overlap | …
-    strategy_used: str             # Range | Breakout | Trend | Reversal | Continuation
+    strategy_used: str             # Trend Following | Scalping | Range Trading | Breakout Trading | Carry Trade | WAIT
     entry_price: float
     stop_loss: float
     take_profit_1: float
@@ -48,77 +47,13 @@ class SessionSignal:
     asian_range_low: float | None = None
     session_color: str = "#64748b"
     session_emoji: str = "⏳"
-    is_actionable: bool = False    # True only if 2+ confluences and all gates pass
+    is_actionable: bool = False    # True only if confluences pass and confidence >= 70
     logged_at: str = ""
 
 
 # ---------------------------------------------------------------------------
-# Candle pattern helpers
+# Helper function
 # ---------------------------------------------------------------------------
-
-def _is_bullish_engulfing(candles: pd.DataFrame) -> bool:
-    if len(candles) < 2:
-        return False
-    prev, last = candles.iloc[-2], candles.iloc[-1]
-    return (
-        float(prev["close"]) < float(prev["open"]) and   # prev bearish
-        float(last["close"]) > float(last["open"]) and   # last bullish
-        float(last["close"]) > float(prev["open"]) and
-        float(last["open"]) < float(prev["close"])
-    )
-
-
-def _is_bearish_engulfing(candles: pd.DataFrame) -> bool:
-    if len(candles) < 2:
-        return False
-    prev, last = candles.iloc[-2], candles.iloc[-1]
-    return (
-        float(prev["close"]) > float(prev["open"]) and   # prev bullish
-        float(last["close"]) < float(last["open"]) and   # last bearish
-        float(last["open"]) > float(prev["close"]) and
-        float(last["close"]) < float(prev["open"])
-    )
-
-
-def _is_bullish_pin_bar(candles: pd.DataFrame) -> bool:
-    if candles.empty:
-        return False
-    c = candles.iloc[-1]
-    body = abs(float(c["close"]) - float(c["open"]))
-    lower_wick = float(c["open"]) - float(c["low"]) if float(c["close"]) > float(c["open"]) else float(c["close"]) - float(c["low"])
-    total_range = float(c["high"]) - float(c["low"])
-    if total_range == 0:
-        return False
-    return lower_wick >= body * 2 and lower_wick / total_range >= 0.6
-
-
-def _is_bearish_pin_bar(candles: pd.DataFrame) -> bool:
-    if candles.empty:
-        return False
-    c = candles.iloc[-1]
-    body = abs(float(c["close"]) - float(c["open"]))
-    upper_wick = float(c["high"]) - float(c["close"]) if float(c["close"]) > float(c["open"]) else float(c["high"]) - float(c["open"])
-    total_range = float(c["high"]) - float(c["low"])
-    if total_range == 0:
-        return False
-    return upper_wick >= body * 2 and upper_wick / total_range >= 0.6
-
-
-def _is_strong_momentum_candle(candles: pd.DataFrame, direction: str) -> bool:
-    """Strong breakout candle: body >= 60% of total range."""
-    if candles.empty:
-        return False
-    c = candles.iloc[-1]
-    body = abs(float(c["close"]) - float(c["open"]))
-    total = float(c["high"]) - float(c["low"])
-    if total == 0:
-        return False
-    is_directional = (
-        float(c["close"]) > float(c["open"]) if direction == "BUY"
-        else float(c["close"]) < float(c["open"])
-    )
-    return is_directional and body / total >= 0.6
-
 
 def _atr_pips(candles: pd.DataFrame, pip_size: float, n: int = 14) -> float:
     try:
@@ -136,7 +71,7 @@ def _atr_pips(candles: pd.DataFrame, pip_size: float, n: int = 14) -> float:
 class SessionStrategyEngine:
     """
     Generates session-aware trading signals using rules specific to each session.
-    Requires at least 2 confluences to produce an actionable signal.
+    Supports manual strategy override and deep logic for the Top 5 strategies.
     """
 
     def __init__(self):
@@ -150,25 +85,42 @@ class SessionStrategyEngine:
         indicators: dict[str, Any],
         zones: list[Any],
         structure: Any | None = None,
+        forced_strategy: str | None = None,
     ) -> SessionSignal:
         """
-        Route to the correct session strategy and return a SessionSignal.
+        Route to the correct strategy and return a SessionSignal.
         """
         pip_size = self.session_engine.get_pip_size(symbol)
 
-        # Compute Asian range for all sessions (London/NY use it)
+        # Compute Asian range for dashboard reporting
         ar_high, ar_low, ar_pips = self.session_engine.compute_asian_range(candles, pip_size=pip_size)
 
-        if session.name == "Asian":
-            sig = self._asian_strategy(session, symbol, candles, indicators, zones, pip_size, ar_high, ar_low)
-        elif session.name == "London":
-            sig = self._london_strategy(session, symbol, candles, indicators, zones, pip_size, ar_high, ar_low)
-        elif session.name == "New York":
-            sig = self._ny_strategy(session, symbol, candles, indicators, zones, pip_size, ar_high, ar_low, structure)
-        elif session.name == "Overlap":
-            sig = self._overlap_strategy(session, symbol, candles, indicators, zones, pip_size, ar_high, ar_low, structure)
+        # Run forced strategy or session-based strategy
+        if forced_strategy == "Trend Following":
+            sig = self._trend_following_strategy(session, symbol, candles, indicators, zones, pip_size)
+        elif forced_strategy == "Quick Scalper":
+            sig = self._scalping_strategy(session, symbol, candles, indicators, zones, pip_size)
+        elif forced_strategy == "Range Trader":
+            sig = self._range_trading_strategy(session, symbol, candles, indicators, zones, pip_size)
+        elif forced_strategy == "Breakout Trader":
+            sig = self._breakout_strategy(session, symbol, candles, indicators, zones, pip_size)
+        elif forced_strategy == "Carry Trader":
+            sig = self._carry_trade_strategy(session, symbol, candles, indicators, zones, pip_size)
         else:
-            sig = self._default_wait(session, symbol, candles, pip_size, ar_high, ar_low)
+            # Default Session routing
+            if session.name == "Asian":
+                sig = self._range_trading_strategy(session, symbol, candles, indicators, zones, pip_size)
+            elif session.name == "London":
+                sig = self._breakout_strategy(session, symbol, candles, indicators, zones, pip_size)
+            elif session.name == "New York":
+                sig = self._trend_following_strategy(session, symbol, candles, indicators, zones, pip_size)
+            elif session.name == "Overlap":
+                # Evaluate both Breakout and Trend, select highest confidence
+                sig_breakout = self._breakout_strategy(session, symbol, candles, indicators, zones, pip_size)
+                sig_trend = self._trend_following_strategy(session, symbol, candles, indicators, zones, pip_size)
+                sig = sig_breakout if sig_breakout.confidence >= sig_trend.confidence else sig_trend
+            else:
+                sig = self._default_wait(session, symbol, candles, pip_size, ar_high, ar_low)
 
         sig.asian_range_high = ar_high
         sig.asian_range_low = ar_low
@@ -178,222 +130,11 @@ class SessionStrategyEngine:
         return sig
 
     # ------------------------------------------------------------------
-    # Asian — Range Strategy
+    # Strategy 1: Trend Following
     # ------------------------------------------------------------------
 
-    def _asian_strategy(
-        self, session, symbol, candles, indicators, zones, pip_size, ar_high, ar_low
-    ) -> SessionSignal:
-        price = float(candles["close"].iloc[-1])
-        atr = _atr_pips(candles, pip_size)
-        confluences: list[str] = []
-        warnings: list[str] = []
-
-        # Use computed Asian range as S/R
-        support = ar_low
-        resistance = ar_high
-        if support is None or resistance is None:
-            # Fall back to zone-based S/R
-            zone_sups = sorted([z for z in zones if z.type == "support"], key=lambda z: z.strength, reverse=True)
-            zone_res = sorted([z for z in zones if z.type == "resistance"], key=lambda z: z.strength, reverse=True)
-            support = zone_sups[0].top if zone_sups else price * 0.999
-            resistance = zone_res[0].bottom if zone_res else price * 1.001
-
-        range_size = resistance - support
-        at_support = (price - support) <= range_size * 0.15
-        at_resistance = (resistance - price) <= range_size * 0.15
-
-        # Confluence 1: RSI extremes
-        rsi = indicators.get("rsi14", 50.0) or 50.0
-        if at_support and rsi < 45:
-            confluences.append(f"RSI {rsi:.1f} — oversold near support")
-        elif at_resistance and rsi > 55:
-            confluences.append(f"RSI {rsi:.1f} — overbought near resistance")
-
-        # Confluence 2: Price at key level
-        if at_support:
-            confluences.append(f"Price {price:.5f} near range support {support:.5f}")
-        elif at_resistance:
-            confluences.append(f"Price {price:.5f} near range resistance {resistance:.5f}")
-
-        # Confluence 3: Pin bar / engulfing at level
-        if at_support and _is_bullish_pin_bar(candles):
-            confluences.append("Bullish pin bar at support")
-        elif at_support and _is_bullish_engulfing(candles):
-            confluences.append("Bullish engulfing at support")
-        elif at_resistance and _is_bearish_pin_bar(candles):
-            confluences.append("Bearish pin bar at resistance")
-        elif at_resistance and _is_bearish_engulfing(candles):
-            confluences.append("Bearish engulfing at resistance")
-
-        # Confluence 4: EMA flat (confirms range)
-        ema50 = indicators.get("ema50") or 0
-        ema200 = indicators.get("ema200") or 0
-        if ema50 and ema200:
-            ema_spread_pct = abs(ema50 - ema200) / ema200 * 100 if ema200 else 0
-            if ema_spread_pct < 0.3:
-                confluences.append("EMA50/200 flat — confirming range environment")
-
-        direction = "BUY" if at_support else ("SELL" if at_resistance else "WAIT")
-        n_conf = len(confluences)
-        confidence = min(95, 30 + n_conf * 18)
-        is_actionable = n_conf >= 2 and direction != "WAIT"
-
-        if direction == "BUY":
-            entry = price
-            sl = support - atr * pip_size * 1.5
-            tp1 = resistance * 0.9
-            tp2 = resistance
-            strategy = "Range Buy"
-            reason = f"Asian range — buying near support {support:.5f}, targeting range midpoint and resistance"
-        elif direction == "SELL":
-            entry = price
-            sl = resistance + atr * pip_size * 1.5
-            tp1 = support * 1.1
-            tp2 = support
-            strategy = "Range Sell"
-            reason = f"Asian range — selling near resistance {resistance:.5f}, targeting range midpoint and support"
-        else:
-            warnings.append("Price is in the middle of the range — no edge")
-            return self._default_wait(session, symbol, candles, pip_size, ar_high, ar_low,
-                                       extra_warnings=warnings, confluences=confluences)
-
-        rr = round(abs(tp1 - entry) / abs(entry - sl), 2) if abs(entry - sl) > 0 else 0.0
-
-        if not is_actionable:
-            warnings.append(f"Only {n_conf} confluence(s) — need at least 2 to act")
-
-        return SessionSignal(
-            pair=symbol,
-            session=session.name,
-            strategy_used=strategy,
-            entry_price=round(entry, 5),
-            stop_loss=round(sl, 5),
-            take_profit_1=round(tp1, 5),
-            take_profit_2=round(tp2, 5),
-            rr_ratio=rr,
-            confidence=confidence,
-            reasoning=reason,
-            confluences=confluences,
-            warnings=warnings,
-            trade_action=direction if is_actionable else "WAIT",
-            pip_size=pip_size,
-            is_actionable=is_actionable,
-        )
-
-    # ------------------------------------------------------------------
-    # London — Breakout + Trend Strategy
-    # ------------------------------------------------------------------
-
-    def _london_strategy(
-        self, session, symbol, candles, indicators, zones, pip_size, ar_high, ar_low
-    ) -> SessionSignal:
-        price = float(candles["close"].iloc[-1])
-        atr = _atr_pips(candles, pip_size)
-        atr_price = atr * pip_size
-        confluences: list[str] = []
-        warnings: list[str] = []
-
-        if ar_high is None or ar_low is None:
-            warnings.append("Asian range unavailable — breakout strategy limited")
-            return self._default_wait(session, symbol, candles, pip_size, ar_high, ar_low,
-                                       extra_warnings=warnings)
-
-        broke_above = price > ar_high
-        broke_below = price < ar_low
-        breakout_margin = atr_price * 0.5
-
-        direction = "BUY" if broke_above else ("SELL" if broke_below else "WAIT")
-
-        # Confluence 1: Asian range breakout
-        if broke_above:
-            confluences.append(f"Price {price:.5f} broke above Asian high {ar_high:.5f}")
-        elif broke_below:
-            confluences.append(f"Price {price:.5f} broke below Asian low {ar_low:.5f}")
-
-        # Confluence 2: EMA trend alignment
-        ema50 = indicators.get("ema50") or 0.0
-        ema200 = indicators.get("ema200") or 0.0
-        if ema50 and ema200:
-            if broke_above and price > ema50 > ema200:
-                confluences.append("EMA50 > EMA200 — bullish trend confirmed")
-            elif broke_below and price < ema50 < ema200:
-                confluences.append("EMA50 < EMA200 — bearish trend confirmed")
-            else:
-                warnings.append("EMA alignment does not confirm breakout direction")
-
-        # Confluence 3: Strong momentum candle
-        if direction != "WAIT" and _is_strong_momentum_candle(candles, direction):
-            confluences.append("Strong momentum breakout candle (body >= 60% range)")
-
-        # Confluence 4: RSI not extreme
-        rsi = indicators.get("rsi14", 50.0) or 50.0
-        if direction == "BUY" and 40 < rsi < 75:
-            confluences.append(f"RSI {rsi:.1f} — momentum without overbought risk")
-        elif direction == "SELL" and 25 < rsi < 60:
-            confluences.append(f"RSI {rsi:.1f} — momentum without oversold risk")
-
-        # Confluence 5: MACD
-        macd = indicators.get("macd", 0.0) or 0.0
-        macd_sig = indicators.get("macd_signal", 0.0) or 0.0
-        if direction == "BUY" and macd > macd_sig:
-            confluences.append("MACD bullish crossover — momentum supporting breakout")
-        elif direction == "SELL" and macd < macd_sig:
-            confluences.append("MACD bearish crossover — momentum supporting breakdown")
-
-        n_conf = len(confluences)
-        confidence = min(95, 35 + n_conf * 15)
-        is_actionable = n_conf >= 2 and direction != "WAIT"
-
-        if direction == "BUY":
-            entry = ar_high + breakout_margin
-            sl = ar_low - atr_price * 0.5   # Below entire Asian range
-            tp1 = entry + (ar_high - ar_low) * 1.5
-            tp2 = entry + (ar_high - ar_low) * 2.5
-            strategy = "London Breakout Buy"
-            reason = f"London breakout above Asian high {ar_high:.5f} with {n_conf} confluences"
-        elif direction == "SELL":
-            entry = ar_low - breakout_margin
-            sl = ar_high + atr_price * 0.5
-            tp1 = entry - (ar_high - ar_low) * 1.5
-            tp2 = entry - (ar_high - ar_low) * 2.5
-            strategy = "London Breakout Sell"
-            reason = f"London breakout below Asian low {ar_low:.5f} with {n_conf} confluences"
-        else:
-            warnings.append(f"Price {price:.5f} inside Asian range [{ar_low:.5f}–{ar_high:.5f}] — waiting for breakout")
-            return self._default_wait(session, symbol, candles, pip_size, ar_high, ar_low,
-                                       extra_warnings=warnings, confluences=confluences)
-
-        sl = max(sl, price - atr_price * 4) if direction == "BUY" else min(sl, price + atr_price * 4)
-        rr = round(abs(tp1 - entry) / abs(entry - sl), 2) if abs(entry - sl) > 0 else 0.0
-
-        if not is_actionable:
-            warnings.append(f"Only {n_conf} confluence(s) — need at least 2")
-
-        return SessionSignal(
-            pair=symbol,
-            session=session.name,
-            strategy_used=strategy,
-            entry_price=round(entry, 5),
-            stop_loss=round(sl, 5),
-            take_profit_1=round(tp1, 5),
-            take_profit_2=round(tp2, 5),
-            rr_ratio=rr,
-            confidence=confidence,
-            reasoning=reason,
-            confluences=confluences,
-            warnings=warnings,
-            trade_action=direction if is_actionable else "WAIT",
-            pip_size=pip_size,
-            is_actionable=is_actionable,
-        )
-
-    # ------------------------------------------------------------------
-    # New York — Reversal + Continuation Strategy
-    # ------------------------------------------------------------------
-
-    def _ny_strategy(
-        self, session, symbol, candles, indicators, zones, pip_size, ar_high, ar_low, structure
+    def _trend_following_strategy(
+        self, session, symbol, candles, indicators, zones, pip_size
     ) -> SessionSignal:
         price = float(candles["close"].iloc[-1])
         atr = _atr_pips(candles, pip_size)
@@ -403,135 +144,265 @@ class SessionStrategyEngine:
 
         ema50 = indicators.get("ema50") or 0.0
         ema200 = indicators.get("ema200") or 0.0
-        rsi = indicators.get("rsi14", 50.0) or 50.0
-        macd = indicators.get("macd", 0.0) or 0.0
-        macd_sig = indicators.get("macd_signal", 0.0) or 0.0
+        adx_val = indicators.get("adx14") or 0.0
 
-        # Determine London trend direction
-        london_trend = "NEUTRAL"
-        if structure is not None:
-            t = getattr(structure, "trend", None) or (structure.get("trend") if isinstance(structure, dict) else None)
-            if t == "bullish":
-                london_trend = "BULLISH"
-            elif t == "bearish":
-                london_trend = "BEARISH"
-        elif ema50 and ema200:
-            london_trend = "BULLISH" if ema50 > ema200 else "BEARISH"
+        if not ema50 or not ema200:
+            return self._default_wait(session, symbol, candles, pip_size, None, None, ["EMA50/200 unavailable for Trend Following"])
 
-        # Detect liquidity grab / stop hunt
-        liq_grab_buy = False
-        liq_grab_sell = False
-        if structure is not None:
-            ls = getattr(structure, "liquidity_sweep", None)
-            if ls == "liquidity_grab_buy":
-                liq_grab_buy = True
-            elif ls == "liquidity_grab_sell":
-                liq_grab_sell = True
+        trend_bullish = ema50 > ema200
+        trend_bearish = ema50 < ema200
 
-        # Check price action patterns
-        bull_engulf = _is_bullish_engulfing(candles)
-        bear_engulf = _is_bearish_engulfing(candles)
-        bull_pin = _is_bullish_pin_bar(candles)
-        bear_pin = _is_bearish_pin_bar(candles)
+        # Crossover checking in the last 15 candles
+        crossover_buy = False
+        crossover_sell = False
+        for i in range(1, min(16, len(candles))):
+            prev = candles.iloc[-i-1]
+            curr = candles.iloc[-i]
+            if prev["ema50"] <= prev["ema200"] and curr["ema50"] > curr["ema200"]:
+                crossover_buy = True
+                break
+            if prev["ema50"] >= prev["ema200"] and curr["ema50"] < curr["ema200"]:
+                crossover_sell = True
+                break
 
-        # Reversal mode: fade the London move
-        reversal_buy = london_trend == "BEARISH" and (liq_grab_buy or bull_engulf or bull_pin)
-        reversal_sell = london_trend == "BULLISH" and (liq_grab_sell or bear_engulf or bear_pin)
-
-        # Continuation mode: ride London trend
-        continuation_buy = london_trend == "BULLISH" and price > ema50 and (bull_engulf or bull_pin)
-        continuation_sell = london_trend == "BEARISH" and price < ema50 and (bear_engulf or bear_pin)
-
-        if reversal_buy:
+        direction = "WAIT"
+        if trend_bullish:
             direction = "BUY"
-            strategy = "NY Reversal Buy"
-            if liq_grab_buy:
-                confluences.append("Buy-side liquidity grab detected — stop hunt cleared")
-            if bull_engulf:
-                confluences.append("Bullish engulfing candle — reversal confirmation")
-            if bull_pin:
-                confluences.append("Bullish pin bar — rejection of lows")
-            reason = f"NY reversal BUY — fading bearish London trend after liquidity sweep"
-        elif reversal_sell:
+            confluences.append("EMA50 > EMA200: Bullish trend alignment")
+            if crossover_buy:
+                confluences.append("Recent Bullish EMA Crossover detected (within 15 bars)")
+        elif trend_bearish:
             direction = "SELL"
-            strategy = "NY Reversal Sell"
-            if liq_grab_sell:
-                confluences.append("Sell-side liquidity grab detected — stop hunt cleared")
-            if bear_engulf:
-                confluences.append("Bearish engulfing candle — reversal confirmation")
-            if bear_pin:
-                confluences.append("Bearish pin bar — rejection of highs")
-            reason = f"NY reversal SELL — fading bullish London trend after liquidity grab"
-        elif continuation_buy:
-            direction = "BUY"
-            strategy = "NY Continuation Buy"
-            confluences.append(f"Continuing London bullish trend (EMA50 {ema50:.5f} > EMA200 {ema200:.5f})")
-            if bull_engulf:
-                confluences.append("Bullish engulfing — pullback complete, resuming trend")
-            elif bull_pin:
-                confluences.append("Bullish pin bar — pullback rejection")
-            reason = f"NY continuation BUY — London trend is bullish, price pulling back into EMA"
-        elif continuation_sell:
-            direction = "SELL"
-            strategy = "NY Continuation Sell"
-            confluences.append(f"Continuing London bearish trend (EMA50 {ema50:.5f} < EMA200 {ema200:.5f})")
-            if bear_engulf:
-                confluences.append("Bearish engulfing — pullback complete, resuming downtrend")
-            elif bear_pin:
-                confluences.append("Bearish pin bar — pullback rejection")
-            reason = f"NY continuation SELL — London trend is bearish, price rallying into EMA"
+            confluences.append("EMA50 < EMA200: Bearish trend alignment")
+            if crossover_sell:
+                confluences.append("Recent Bearish EMA Crossover detected (within 15 bars)")
+
+        if adx_val > 25:
+            confluences.append(f"ADX {adx_val:.1f} > 25: Strong trend confirmed")
         else:
-            warnings.append(f"No clear NY setup — London trend: {london_trend}, no confirmed pattern")
-            return self._default_wait(session, symbol, candles, pip_size, ar_high, ar_low,
-                                       extra_warnings=warnings)
+            warnings.append(f"ADX {adx_val:.1f} <= 25: Weak trend, breakout/ranging risk exists")
 
-        # RSI filter
-        if direction == "BUY" and rsi < 70:
-            confluences.append(f"RSI {rsi:.1f} — not overbought, room to move up")
-        elif direction == "SELL" and rsi > 30:
-            confluences.append(f"RSI {rsi:.1f} — not oversold, room to move down")
+        # Pullback validation (price close to 50 EMA)
+        near_ema = abs(price - ema50) <= atr_price * 1.8
+        if near_ema:
+            confluences.append("Price is testing or pulled back near the 50 EMA")
 
-        # MACD filter
-        if direction == "BUY" and macd > macd_sig:
-            confluences.append("MACD bullish — momentum confirms direction")
-        elif direction == "SELL" and macd < macd_sig:
-            confluences.append("MACD bearish — momentum confirms direction")
+        n_conf = len(confluences)
+        confidence = min(98, 40 + n_conf * 15)
+        is_actionable = n_conf >= 2 and direction != "WAIT" and adx_val > 25
 
-        # Key S/R zones
+        if direction == "BUY":
+            entry = price
+            sl = min(ema200 - atr_price * 0.5, price - atr_price * 2.0)
+            tp1 = entry + abs(entry - sl) * 1.5
+            tp2 = entry + abs(entry - sl) * 2.5
+            reason = f"Trend Following BUY (ADX: {adx_val:.1f})"
+        elif direction == "SELL":
+            entry = price
+            sl = max(ema200 + atr_price * 0.5, price + atr_price * 2.0)
+            tp1 = entry - abs(sl - entry) * 1.5
+            tp2 = entry - abs(sl - entry) * 2.5
+            reason = f"Trend Following SELL (ADX: {adx_val:.1f})"
+        else:
+            return self._default_wait(session, symbol, candles, pip_size, None, None, ["No clear trend alignment"])
+
+        rr = round(abs(tp1 - entry) / abs(entry - sl), 2) if abs(entry - sl) > 0 else 0.0
+
+        if not is_actionable:
+            confidence = min(68, confidence)
+            warnings.append("Trend confirmation filters (ADX > 25) not fully met")
+
+        return SessionSignal(
+            pair=symbol,
+            session=session.name,
+            strategy_used="Trend Following",
+            entry_price=round(entry, 5),
+            stop_loss=round(sl, 5),
+            take_profit_1=round(tp1, 5),
+            take_profit_2=round(tp2, 5),
+            rr_ratio=rr,
+            confidence=confidence,
+            reasoning=reason,
+            confluences=confluences,
+            warnings=warnings,
+            trade_action=direction if (is_actionable and confidence >= 70) else "WAIT",
+            pip_size=pip_size,
+            is_actionable=is_actionable and confidence >= 70,
+        )
+
+    # ------------------------------------------------------------------
+    # Strategy 2: Scalping
+    # ------------------------------------------------------------------
+
+    def _scalping_strategy(
+        self, session, symbol, candles, indicators, zones, pip_size
+    ) -> SessionSignal:
+        price = float(candles["close"].iloc[-1])
+        atr = _atr_pips(candles, pip_size)
+        atr_price = atr * pip_size
+        confluences: list[str] = []
+        warnings: list[str] = []
+
+        bb_upper = indicators.get("bb_upper") or 0.0
+        bb_lower = indicators.get("bb_lower") or 0.0
+        bb_width = indicators.get("bb_width") or 0.0
+        stoch_k = indicators.get("stoch_k") or 50.0
+        stoch_d = indicators.get("stoch_d") or 50.0
+
+        if not bb_upper or not bb_lower:
+            return self._default_wait(session, symbol, candles, pip_size, None, None, ["BB bands unavailable for Scalping"])
+
+        # BB Width SMA for squeeze check
+        bb_width_sma = candles["bb_width"].rolling(20).mean().iloc[-1] if len(candles) >= 20 else bb_width
+        is_squeeze = bb_width <= bb_width_sma * 1.05
+
+        if is_squeeze:
+            confluences.append(f"Bollinger Band Squeeze (width {bb_width:.4f} <= SMA {bb_width_sma:.4f})")
+        else:
+            warnings.append("Bollinger Bands not in a squeeze zone")
+
+        prev_k = candles["stoch_k"].iloc[-2]
+        prev_d = candles["stoch_d"].iloc[-2]
+
+        stoch_buy = (prev_k < prev_d) and (stoch_k >= stoch_d) and (stoch_k < 25)
+        stoch_sell = (prev_k > prev_d) and (stoch_k <= stoch_d) and (stoch_k > 75)
+
+        direction = "WAIT"
+        if stoch_buy:
+            direction = "BUY"
+            confluences.append(f"Stochastic bullish cross oversold (K: {stoch_k:.1f}, D: {stoch_d:.1f})")
+        elif stoch_sell:
+            direction = "SELL"
+            confluences.append(f"Stochastic bearish cross overbought (K: {stoch_k:.1f}, D: {stoch_d:.1f})")
+        else:
+            warnings.append("No oversold/overbought Stochastic crossover")
+
+        n_conf = len(confluences)
+        confidence = min(95, 35 + n_conf * 20)
+        is_actionable = n_conf >= 2 and direction != "WAIT"
+
+        # Scalper targets
+        pip_target_sl = 8.0
+        pip_target_tp1 = 10.0
+
+        if direction == "BUY":
+            entry = price
+            sl = price - pip_target_sl * pip_size
+            tp1 = price + pip_target_tp1 * pip_size
+            tp2 = bb_upper
+            reason = "Quick Scalp BUY (BB Squeeze + Stochastic oversold)"
+        elif direction == "SELL":
+            entry = price
+            sl = price + pip_target_sl * pip_size
+            tp1 = price - pip_target_tp1 * pip_size
+            tp2 = bb_lower
+            reason = "Quick Scalp SELL (BB Squeeze + Stochastic overbought)"
+        else:
+            return self._default_wait(session, symbol, candles, pip_size, None, None, ["No scalp triggers met"])
+
+        rr = round(abs(tp1 - entry) / abs(entry - sl), 2) if abs(entry - sl) > 0 else 0.0
+
+        if not is_actionable:
+            confidence = min(68, confidence)
+            warnings.append("Scalping confluences (Squeeze & Stochastic) not fully aligned")
+
+        return SessionSignal(
+            pair=symbol,
+            session=session.name,
+            strategy_used="Scalping",
+            entry_price=round(entry, 5),
+            stop_loss=round(sl, 5),
+            take_profit_1=round(tp1, 5),
+            take_profit_2=round(tp2, 5),
+            rr_ratio=rr,
+            confidence=confidence,
+            reasoning=reason,
+            confluences=confluences,
+            warnings=warnings,
+            trade_action=direction if (is_actionable and confidence >= 70) else "WAIT",
+            pip_size=pip_size,
+            is_actionable=is_actionable and confidence >= 70,
+        )
+
+    # ------------------------------------------------------------------
+    # Strategy 3: Range Trading
+    # ------------------------------------------------------------------
+
+    def _range_trading_strategy(
+        self, session, symbol, candles, indicators, zones, pip_size
+    ) -> SessionSignal:
+        price = float(candles["close"].iloc[-1])
+        atr = _atr_pips(candles, pip_size)
+        atr_price = atr * pip_size
+        confluences: list[str] = []
+        warnings: list[str] = []
+
+        rsi_val = indicators.get("rsi14") or 50.0
+        adx_val = indicators.get("adx14") or 0.0
+
         zone_sups = sorted([z for z in zones if z.type == "support"], key=lambda z: z.strength, reverse=True)
         zone_res = sorted([z for z in zones if z.type == "resistance"], key=lambda z: z.strength, reverse=True)
 
-        if direction == "BUY":
-            entry = price
-            nearest_sup = zone_sups[0].top if zone_sups else price - atr_price * 1.5
-            sl = nearest_sup - atr_price * 0.5
-            nearest_res = zone_res[0].bottom if zone_res else price + atr_price * 3
-            tp1 = nearest_res
-            tp2 = nearest_res + atr_price * 2
-            if zone_sups:
-                confluences.append(f"Support zone at {zone_sups[0].top:.5f} as SL anchor")
+        closest_support = zone_sups[0].top if zone_sups else None
+        closest_resistance = zone_res[0].bottom if zone_res else None
+
+        if closest_support is None or closest_resistance is None:
+            return self._default_wait(session, symbol, candles, pip_size, None, None, ["Missing valid S/R zones for Range strategy"])
+
+        range_size = closest_resistance - closest_support
+        at_support = (price - closest_support) <= range_size * 0.20
+        at_resistance = (closest_resistance - price) <= range_size * 0.20
+
+        direction = "WAIT"
+        if at_support:
+            direction = "BUY"
+            confluences.append(f"Price is near range support {closest_support:.5f}")
+            if rsi_val < 35:
+                confluences.append(f"RSI {rsi_val:.1f} confirms oversold conditions")
+            else:
+                warnings.append(f"RSI {rsi_val:.1f} is not oversold at support")
+        elif at_resistance:
+            direction = "SELL"
+            confluences.append(f"Price is near range resistance {closest_resistance:.5f}")
+            if rsi_val > 65:
+                confluences.append(f"RSI {rsi_val:.1f} confirms overbought conditions")
+            else:
+                warnings.append(f"RSI {rsi_val:.1f} is not overbought at resistance")
+
+        if adx_val < 20:
+            confluences.append(f"ADX {adx_val:.1f} < 20: Sideways range confirmed")
         else:
-            entry = price
-            nearest_res = zone_res[0].bottom if zone_res else price + atr_price * 1.5
-            sl = nearest_res + atr_price * 0.5
-            nearest_sup = zone_sups[0].top if zone_sups else price - atr_price * 3
-            tp1 = nearest_sup
-            tp2 = nearest_sup - atr_price * 2
-            if zone_res:
-                confluences.append(f"Resistance zone at {zone_res[0].bottom:.5f} as SL anchor")
+            warnings.append(f"ADX {adx_val:.1f} >= 20: Market shows trending characteristics")
 
         n_conf = len(confluences)
-        confidence = min(95, 40 + n_conf * 13)
-        is_actionable = n_conf >= 2
+        confidence = min(96, 30 + n_conf * 22)
+        is_actionable = n_conf >= 2 and direction != "WAIT" and adx_val < 20
+
+        if direction == "BUY":
+            entry = price
+            sl = closest_support - 15 * pip_size
+            tp1 = closest_support + range_size * 0.5
+            tp2 = closest_resistance - atr_price * 0.5
+            reason = "Range Support BUY Bounce"
+        elif direction == "SELL":
+            entry = price
+            sl = closest_resistance + 15 * pip_size
+            tp1 = closest_resistance - range_size * 0.5
+            tp2 = closest_support + atr_price * 0.5
+            reason = "Range Resistance SELL Reject"
+        else:
+            return self._default_wait(session, symbol, candles, pip_size, closest_resistance, closest_support, ["Price in middle of range"])
+
         rr = round(abs(tp1 - entry) / abs(entry - sl), 2) if abs(entry - sl) > 0 else 0.0
 
         if not is_actionable:
-            warnings.append(f"Only {n_conf} confluence(s) — need at least 2")
+            confidence = min(68, confidence)
+            warnings.append("Range setups require flat trend (ADX < 20)")
 
         return SessionSignal(
             pair=symbol,
             session=session.name,
-            strategy_used=strategy,
+            strategy_used="Range Trading",
             entry_price=round(entry, 5),
             stop_loss=round(sl, 5),
             take_profit_1=round(tp1, 5),
@@ -541,61 +412,194 @@ class SessionStrategyEngine:
             reasoning=reason,
             confluences=confluences,
             warnings=warnings,
-            trade_action=direction if is_actionable else "WAIT",
+            trade_action=direction if (is_actionable and confidence >= 70) else "WAIT",
             pip_size=pip_size,
-            is_actionable=is_actionable,
+            is_actionable=is_actionable and confidence >= 70,
         )
 
     # ------------------------------------------------------------------
-    # Overlap — Score all strategies, return best
+    # Strategy 4: Breakout Trading
     # ------------------------------------------------------------------
 
-    def _overlap_strategy(
-        self, session, symbol, candles, indicators, zones, pip_size, ar_high, ar_low, structure
+    def _breakout_strategy(
+        self, session, symbol, candles, indicators, zones, pip_size
     ) -> SessionSignal:
-        # Run all strategies under a London-like session state
-        from engine.session_engine import _SESSION_WINDOWS
-        london_meta = next(w for w in _SESSION_WINDOWS if w["name"] == "London")
-        ny_meta = next(w for w in _SESSION_WINDOWS if w["name"] == "New York")
+        price = float(candles["close"].iloc[-1])
+        atr = _atr_pips(candles, pip_size)
+        atr_price = atr * pip_size
+        confluences: list[str] = []
+        warnings: list[str] = []
 
-        from engine.session_engine import SessionState as SS
-        london_state = SS(
-            name="London", strategy="Breakout + Trend", volatility="HIGH",
-            emoji="🇬🇧", color="#f59e0b", description="",
-            pip_target_min=15, pip_target_max=50,
-            allowed_strategies=london_meta["allowed_strategies"],
-            avoid_breakouts=False, utc_hour=session.utc_hour,
+        curr_volume = float(candles["volume"].iloc[-1]) if "volume" in candles.columns else 0.0
+        volume_avg = indicators.get("volume_avg") or 1.0
+
+        zone_sups = sorted([z for z in zones if z.type == "support"], key=lambda z: z.strength, reverse=True)
+        zone_res = sorted([z for z in zones if z.type == "resistance"], key=lambda z: z.strength, reverse=True)
+
+        closest_support = zone_sups[0].bottom if zone_sups else None
+        closest_resistance = zone_res[0].top if zone_res else None
+
+        if closest_support is None or closest_resistance is None:
+            return self._default_wait(session, symbol, candles, pip_size, None, None, ["Missing valid S/R boundaries for Breakout"])
+
+        broke_above = price > closest_resistance
+        broke_below = price < closest_support
+
+        direction = "WAIT"
+        if broke_above:
+            direction = "BUY"
+            confluences.append(f"Price broke above key resistance level {closest_resistance:.5f}")
+        elif broke_below:
+            direction = "SELL"
+            confluences.append(f"Price broke below key support level {closest_support:.5f}")
+
+        # Volume spike filter
+        if curr_volume >= volume_avg * 1.4:
+            confluences.append(f"Volume spike confirmed ({curr_volume:.0f} > 1.4x avg {volume_avg:.0f})")
+        else:
+            warnings.append(f"No volume spike detected (Vol: {curr_volume:.0f} vs Avg: {volume_avg:.0f})")
+
+        n_conf = len(confluences)
+        confidence = min(96, 30 + n_conf * 20)
+        is_actionable = n_conf >= 2 and direction != "WAIT"
+
+        if direction == "BUY":
+            entry = price
+            sl = closest_resistance - atr_price * 0.8
+            tp1 = entry + abs(entry - sl) * 2.0
+            tp2 = entry + abs(entry - sl) * 3.5
+            reason = "Resistance Breakout BUY"
+        elif direction == "SELL":
+            entry = price
+            sl = closest_support + atr_price * 0.8
+            tp1 = entry - abs(sl - entry) * 2.0
+            tp2 = entry - abs(sl - entry) * 3.5
+            reason = "Support Breakdown SELL"
+        else:
+            return self._default_wait(session, symbol, candles, pip_size, closest_resistance, closest_support, ["Price remains within range"])
+
+        rr = round(abs(tp1 - entry) / abs(entry - sl), 2) if abs(entry - sl) > 0 else 0.0
+
+        if not is_actionable:
+            confidence = min(68, confidence)
+            warnings.append("Breakout setups require a clear volume spike to reduce fakeouts")
+
+        return SessionSignal(
+            pair=symbol,
+            session=session.name,
+            strategy_used="Breakout Trading",
+            entry_price=round(entry, 5),
+            stop_loss=round(sl, 5),
+            take_profit_1=round(tp1, 5),
+            take_profit_2=round(tp2, 5),
+            rr_ratio=rr,
+            confidence=confidence,
+            reasoning=reason,
+            confluences=confluences,
+            warnings=warnings,
+            trade_action=direction if (is_actionable and confidence >= 70) else "WAIT",
+            pip_size=pip_size,
+            is_actionable=is_actionable and confidence >= 70,
         )
-        ny_state = SS(
-            name="New York", strategy="Reversal + Continuation", volatility="HIGH",
-            emoji="🗽", color="#ef4444", description="",
-            pip_target_min=20, pip_target_max=60,
-            allowed_strategies=ny_meta["allowed_strategies"],
-            avoid_breakouts=False, utc_hour=session.utc_hour,
+
+    # ------------------------------------------------------------------
+    # Strategy 5: Carry Trade
+    # ------------------------------------------------------------------
+
+    def _carry_trade_strategy(
+        self, session, symbol, candles, indicators, zones, pip_size
+    ) -> SessionSignal:
+        from config import CURRENCY_INTEREST_RATES
+        price = float(candles["close"].iloc[-1])
+        atr = _atr_pips(candles, pip_size)
+        atr_price = atr * pip_size
+        confluences: list[str] = []
+        warnings: list[str] = []
+
+        base = symbol[:3].upper()
+        quote = symbol[3:].upper() if len(symbol) >= 6 else ""
+
+        base_rate = CURRENCY_INTEREST_RATES.get(base, 0.0)
+        quote_rate = CURRENCY_INTEREST_RATES.get(quote, 0.0)
+        interest_diff = base_rate - quote_rate
+
+        # Filter out flat interest differentials
+        if abs(interest_diff) < 1.5:
+            return self._default_wait(session, symbol, candles, pip_size, None, None, [f"Interest differential too flat ({interest_diff:+.2f}%)"])
+
+        # Long-term trend check
+        ema200 = indicators.get("ema200") or price
+        trend_aligned_long = price > ema200
+        trend_aligned_short = price < ema200
+
+        # ATR Volatility check
+        atr_sma = candles["atr14"].rolling(50).mean().iloc[-1] if len(candles) >= 50 else candles["atr14"].mean()
+        curr_atr = candles["atr14"].iloc[-1]
+        is_high_volatility = curr_atr > atr_sma * 1.75
+
+        direction = "WAIT"
+        if interest_diff >= 1.5:
+            if trend_aligned_long:
+                direction = "BUY"
+                confluences.append(f"Yield favors Long: {base} ({base_rate}%) > {quote} ({quote_rate}%)")
+                confluences.append("Long-term market trend (Price > EMA200) aligns with carry direction")
+            else:
+                warnings.append("Yield favors Long, but technical trend is bearish (Price < EMA200)")
+        elif interest_diff <= -1.5:
+            if trend_aligned_short:
+                direction = "SELL"
+                confluences.append(f"Yield favors Short: {quote} ({quote_rate}%) > {base} ({base_rate}%)")
+                confluences.append("Long-term market trend (Price < EMA200) aligns with carry direction")
+            else:
+                warnings.append("Yield favors Short, but technical trend is bullish (Price > EMA200)")
+
+        if is_high_volatility:
+            warnings.append(f"High ATR volatility ({curr_atr:.5f} > SMA: {atr_sma * 1.75:.5f}) - Carry trade blocked")
+        else:
+            confluences.append("Stable volatility regime (no risk-off panic detected)")
+
+        n_conf = len(confluences)
+        confidence = min(95, 30 + n_conf * 22)
+        is_actionable = n_conf >= 3 and direction != "WAIT" and not is_high_volatility
+
+        if direction == "BUY":
+            entry = price
+            sl = price - atr_price * 3.5
+            tp1 = price + abs(price - sl) * 2.5
+            tp2 = price + abs(price - sl) * 4.0
+            reason = f"Carry Trade BUY (Interest diff: {interest_diff:+.2f}%)"
+        elif direction == "SELL":
+            entry = price
+            sl = price + atr_price * 3.5
+            tp1 = price - abs(sl - price) * 2.5
+            tp2 = price - abs(sl - price) * 4.0
+            reason = f"Carry Trade SELL (Interest diff: {interest_diff:+.2f}%)"
+        else:
+            return self._default_wait(session, symbol, candles, pip_size, None, None, ["Yield favors trade direction, but trend is contrary"])
+
+        rr = round(abs(tp1 - entry) / abs(entry - sl), 2) if abs(entry - sl) > 0 else 0.0
+
+        if not is_actionable:
+            confidence = min(68, confidence)
+            warnings.append("Carry Trade requires Trend Alignment and Low Volatility (ATR < 1.75x average)")
+
+        return SessionSignal(
+            pair=symbol,
+            session=session.name,
+            strategy_used="Carry Trade",
+            entry_price=round(entry, 5),
+            stop_loss=round(sl, 5),
+            take_profit_1=round(tp1, 5),
+            take_profit_2=round(tp2, 5),
+            rr_ratio=rr,
+            confidence=confidence,
+            reasoning=reason,
+            confluences=confluences,
+            warnings=warnings,
+            trade_action=direction if (is_actionable and confidence >= 70) else "WAIT",
+            pip_size=pip_size,
+            is_actionable=is_actionable and confidence >= 70,
         )
-
-        sigs = []
-        for state in (london_state, ny_state):
-            try:
-                if state.name == "London":
-                    s = self._london_strategy(state, symbol, candles, indicators, zones, pip_size, ar_high, ar_low)
-                else:
-                    s = self._ny_strategy(state, symbol, candles, indicators, zones, pip_size, ar_high, ar_low, structure)
-                sigs.append(s)
-            except Exception:
-                pass
-
-        if not sigs:
-            return self._default_wait(session, symbol, candles, pip_size, ar_high, ar_low)
-
-        best = max(sigs, key=lambda s: s.confidence)
-        # Boost confidence during overlap
-        best.confidence = min(95, best.confidence + 10)
-        best.session = "Overlap"
-        best.session_color = session.color
-        best.session_emoji = session.emoji
-        best.confluences.insert(0, "Overlap session: London + NY simultaneously active — highest probability")
-        return best
 
     # ------------------------------------------------------------------
     # Default WAIT
@@ -614,7 +618,7 @@ class SessionStrategyEngine:
     ) -> SessionSignal:
         price = float(candles["close"].iloc[-1]) if not candles.empty else 0.0
         warnings = extra_warnings or []
-        warnings.insert(0, f"{session.name} session — no high-probability setup detected, standing by")
+        warnings.insert(0, f"Standing by — no high-probability setup detected for {session.name}")
         return SessionSignal(
             pair=symbol,
             session=session.name,
@@ -625,7 +629,7 @@ class SessionStrategyEngine:
             take_profit_2=0.0,
             rr_ratio=0.0,
             confidence=0,
-            reasoning=f"No actionable {session.name} session setup — waiting for confluence",
+            reasoning=f"Standing by in {session.name} session",
             confluences=confluences or [],
             warnings=warnings,
             trade_action="WAIT",

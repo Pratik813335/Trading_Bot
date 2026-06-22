@@ -25,7 +25,19 @@ _load_dotenv_file(BASE_DIR / ".env")
 
 INITIAL_BALANCE = 10000
 RISK_PER_TRADE = 0.02
-MIN_CONFIRMATION_CONFIDENCE = 45
+MIN_CONFIRMATION_CONFIDENCE = 70
+
+# Central Bank Interest Rates (for Carry Trade Strategy)
+CURRENCY_INTEREST_RATES = {
+    "USD": 5.25,
+    "EUR": 3.75,
+    "GBP": 5.00,
+    "AUD": 4.35,
+    "NZD": 5.25,
+    "JPY": 0.25,
+    "CHF": 1.25,
+    "CAD": 4.75,
+}
 
 SYMBOLS = ["XAUUSD", "EURUSD", "GBPUSD" , "AUDUSD" ,"USDJPY", "USDCHF", "USDCAD"]
 TIMEFRAMES = ["1", "5", "15", "30", "60", "240", "D"]

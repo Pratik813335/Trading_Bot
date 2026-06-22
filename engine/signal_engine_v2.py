@@ -157,6 +157,9 @@ class SignalEngineV2:
             else:
                 signal = "NEUTRAL"
 
+        if weighted_confidence < MIN_CONFIRMATION_CONFIDENCE:
+            signal = "NO_TRADE"
+
         stop_loss, tp1, rr = build_trade_plan("BUY" if bullish > bearish else "SELL", price, atr_value, [
             {"type": zone.type, "low": zone.bottom, "high": zone.top, "mid": (zone.top + zone.bottom) / 2}
             for zone in zones
