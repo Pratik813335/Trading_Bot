@@ -1481,6 +1481,59 @@ def render_tradingview_widget(symbol, timeframe, bundle):
     panel_id = f"tv_panel_clean_{symbol}_{timeframe}".replace(":", "_")
     panel_json = json.dumps(panel_payload)
 
+    # Calculate countdown to next high-impact news
+    from datetime import datetime, timezone
+    news_countdown_text = ""
+    try:
+        forex_factory_feed = orchestrator.forex_factory_feed
+        if forex_factory_feed:
+            base = symbol[:3].upper()
+            quote = symbol[3:].upper() if len(symbol) >= 6 else ""
+            symbol_currencies = {base, quote} - {""}
+            
+            all_events = forex_factory_feed.fetch_events() or []
+            now_utc = datetime.now(timezone.utc)
+            
+            upcoming_high_events = []
+            for ev in all_events:
+                if ev.impact_level == "HIGH" and ev.currency in symbol_currencies:
+                    try:
+                        pub_time = datetime.fromisoformat(ev.publication_time.replace("Z", "+00:00"))
+                        if pub_time > now_utc:
+                            upcoming_high_events.append((pub_time, ev.event_name))
+                    except Exception:
+                        pass
+            
+            if upcoming_high_events:
+                upcoming_high_events.sort(key=lambda x: x[0])
+                next_high_news_time, next_high_news_name = upcoming_high_events[0]
+                
+                time_diff = next_high_news_time - now_utc
+                diff_seconds = time_diff.total_seconds()
+                diff_hours = int(diff_seconds // 3600)
+                diff_mins = int((diff_seconds % 3600) // 60)
+                
+                if diff_hours > 0:
+                    news_countdown_text = f"{next_high_news_name} in {diff_hours}h {diff_mins}m"
+                else:
+                    news_countdown_text = f"{next_high_news_name} in {diff_mins}m"
+    except Exception:
+        pass
+
+    if news_countdown_text:
+        countdown_badge_html = f"""
+        <div style="padding:10px 14px;background:#ef4444;color:#fff;font-weight:700;border-radius:999px;font-size:13px;box-shadow:0 4px 12px rgba(239,68,68,0.3);display:flex;align-items:center;gap:6px;font-family:Arial,sans-serif;">
+          <span style="width:8px;height:8px;border-radius:50%;background:#fff;display:inline-block;"></span>
+          <span>⚠️ {news_countdown_text}</span>
+        </div>
+        """
+    else:
+        countdown_badge_html = """
+        <div style="padding:10px 14px;background:#22c55e;color:#fff;font-weight:700;border-radius:999px;font-size:13px;box-shadow:0 4px 12px rgba(34,197,94,0.2);display:flex;align-items:center;gap:6px;font-family:Arial,sans-serif;">
+          <span>🟢 News Clear</span>
+        </div>
+        """
+
     html = f"""
     <div id="{container_id}_shell" style="height:760px;width:100%;position:relative;border:1px solid rgba(148,163,184,0.35);border-radius:22px;overflow:hidden;background:#ffffff;">
       <style>
@@ -1500,7 +1553,8 @@ def render_tradingview_widget(symbol, timeframe, bundle):
           height: 14px;
         }}
       </style>
-      <div style="position:absolute;top:14px;right:14px;z-index:8;">
+      <div style="position:absolute;top:14px;right:14px;z-index:8;display:flex;gap:10px;align-items:center;">
+        {countdown_badge_html}
         <button type="button" id="{container_id}_fullscreen" style="border:none;border-radius:999px;padding:10px 14px;background:rgba(15,23,42,0.88);color:#fff;font-weight:700;cursor:pointer;">Fullscreen</button>
       </div>
       <div id="{panel_id}" style="position:absolute;top:18px;left:18px;width:340px;height:440px;min-width:260px;min-height:200px;resize:both;overflow:auto;z-index:9;border-radius:24px;background:linear-gradient(180deg, rgba(15,23,42,0.86), rgba(30,41,59,0.82));color:#f8fafc;border:1px solid rgba(148,163,184,0.28);box-shadow:0 25px 50px rgba(15,23,42,0.35);font-family:Arial,sans-serif;backdrop-filter:blur(10px);"></div>
@@ -1807,6 +1861,32 @@ def render_metric_strip(bundle):
     sync_val   = bundle.sync.match_percentage
     sync_col   = "#16a34a" if sync_val >= 80 else ("#f59e0b" if sync_val >= 50 else "#dc2626")
 
+    # Count MTF alignment
+    align_count = 0
+    total_tf_count = 0
+    primary_dir = "BUY" if "BUY" in signal_val else "SELL" if "SELL" in signal_val else None
+    display_dir = primary_dir
+    if not display_dir and trend_val in ["bullish", "bearish"]:
+        display_dir = "BUY" if trend_val == "bullish" else "SELL"
+    
+    if display_dir and bundle.mtf_analysis:
+        for tf, tf_data in bundle.mtf_analysis.items():
+            if tf in ["5", "15", "60", "240", "D"]:
+                total_tf_count += 1
+                trend = tf_data.get("trend")
+                if display_dir == "BUY" and trend == "bullish":
+                    align_count += 1
+                elif display_dir == "SELL" and trend == "bearish":
+                    align_count += 1
+                    
+    mtf_text = "--"
+    mtf_color = "#64748b"
+    if display_dir:
+        mtf_text = f"{align_count}/{total_tf_count} Aligned"
+        mtf_color = "#16a34a" if align_count >= 4 else ("#f59e0b" if align_count == 3 else "#dc2626")
+        
+    mtf_badge_card = f'<div class="metric-card"><div class="metric-label">MTF Alignment</div><div class="metric-value" style="color:{mtf_color};">{mtf_text}</div></div>'
+
     # Build the confidence gauge cell separately
     conf_gauge = f"""
     <div class="metric-card">
@@ -1824,6 +1904,7 @@ def render_metric_strip(bundle):
     other_cards = [
         f'<div class="metric-card"><div class="metric-label">Signal</div><div class="metric-value" style="color:{sig_color};">{signal_val}</div></div>',
         conf_gauge,
+        mtf_badge_card,
         f'<div class="metric-card"><div class="metric-label">Trend</div><div class="metric-value" style="color:{trend_col};">{trend_val.upper() if trend_val != "n/a" else "N/A"}</div></div>',
         f'<div class="metric-card"><div class="metric-label">Phase</div><div class="metric-value">{structure.get("phase", "n/a").title()}</div></div>',
         f'<div class="metric-card"><div class="metric-label">Sync</div><div class="metric-value" style="color:{sync_col};">{sync_val}%</div></div>',

@@ -216,6 +216,85 @@ class YahooProvider:
         )
 
 
+class YFinanceProvider:
+    provider_name = "yfinance"
+
+    def get_symbols(self) -> list[str]:
+        return list(YAHOO_SYMBOLS.keys())
+
+    def get_quote(self, symbol: str) -> QuoteSnapshot | None:
+        frame = self.get_candles(symbol, "5")
+        if frame is None or frame.candles.empty:
+            return None
+        last = frame.candles.iloc[-1]
+        price = float(last["close"])
+        return QuoteSnapshot(
+            symbol=symbol,
+            bid=price,
+            ask=price,
+            timestamp=last["timestamp"].to_pydatetime(),
+            provider=self.provider_name,
+        )
+
+    def get_candles(self, symbol: str, timeframe: str) -> MarketFrame | None:
+        provider_symbol = YAHOO_SYMBOLS.get(symbol)
+        interval_range = YAHOO_INTERVALS.get(timeframe)
+        if not provider_symbol or not interval_range:
+            return None
+
+        interval, data_range = interval_range
+        started_at = datetime.now(timezone.utc)
+        
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker(provider_symbol)
+            df = ticker.history(period=data_range, interval=interval, prepost=False)
+            if df.empty:
+                return None
+            
+            df = df.reset_index()
+            if "Datetime" in df.columns:
+                df = df.rename(columns={"Datetime": "timestamp"})
+            elif "Date" in df.columns:
+                df = df.rename(columns={"Date": "timestamp"})
+            
+            df = df.rename(
+                columns={
+                    "Open": "open",
+                    "High": "high",
+                    "Low": "low",
+                    "Close": "close",
+                    "Volume": "volume",
+                }
+            )
+            
+            normalized = normalize_candles(df, source=self.provider_name)
+            is_valid, _ = validate_ohlcv(normalized)
+            if not is_valid:
+                return None
+
+            fetched_at = datetime.now(timezone.utc)
+            note = "Using GC=F gold futures proxy for XAUUSD" if symbol == "XAUUSD" else ""
+            return MarketFrame(
+                candles=normalized,
+                metadata=FeedMetadata(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    source=self.provider_name,
+                    provider=self.provider_name,
+                    provider_symbol=provider_symbol,
+                    fetched_at=fetched_at,
+                    latency_seconds=(fetched_at - started_at).total_seconds(),
+                    source_note=note,
+                    total_bars=len(normalized),
+                ),
+                quote=None,
+            )
+        except Exception as e:
+            print(f"YFinanceProvider error: {e}")
+            return None
+
+
 class OandaProvider:
     provider_name = OANDA_PROVIDER_NAME
 

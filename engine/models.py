@@ -46,11 +46,13 @@ class StructureState:
     ll: list[float] = field(default_factory=list)
     swing_points: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     imbalances: list[dict[str, Any]] = field(default_factory=list)
+    order_blocks: list[dict[str, Any]] = field(default_factory=list)
     bos: str | None = None
     choch: str | None = None
     liquidity_sweep: str | None = None
     breakout: bool = False
     pullback: bool = False
+
 
 
 @dataclass

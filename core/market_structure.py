@@ -193,3 +193,38 @@ def detect_liquidity(df):
                 return "liquidity_grab_sell"
 
     return None
+
+
+def detect_order_blocks(df, n_candles=50):
+    order_blocks = []
+    if len(df) < 5:
+        return order_blocks
+
+    for i in range(2, min(n_candles, len(df) - 1)):
+        candle = df.iloc[-i]
+        next_candle = df.iloc[-i + 1]
+        
+        # Bullish OB: bearish candle followed by strong bullish move
+        if (candle['close'] < candle['open']  # bearish OB candle
+            and next_candle['close'] > candle['high']  # strong impulse above
+            and (next_candle['close'] - next_candle['open']) > (candle['high'] - candle['low'])):
+            order_blocks.append({
+                'type': 'bullish_ob',
+                'high': float(candle['high']),
+                'low': float(candle['low']),
+                'timestamp': str(candle['timestamp'])
+            })
+            
+        # Bearish OB: bullish candle followed by strong bearish move
+        elif (candle['close'] > candle['open']  # bullish OB candle
+              and next_candle['close'] < candle['low']  # strong impulse below
+              and (candle['open'] - candle['close']) > (candle['high'] - candle['low'])):
+            order_blocks.append({
+                'type': 'bearish_ob',
+                'high': float(candle['high']),
+                'low': float(candle['low']),
+                'timestamp': str(candle['timestamp'])
+            })
+            
+    return order_blocks
+

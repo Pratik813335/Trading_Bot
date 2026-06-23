@@ -29,6 +29,15 @@ def candle_pattern(df):
     if len(df) < 2:
         return None
 
+    current = df.iloc[-1]
+    previous = df.iloc[-2]
+    body = abs(current['close'] - current['open'])
+    candle_range = max(current['high'] - current['low'], 0.0001)
+    lower_wick = min(current['open'], current['close']) - current['low']
+    upper_wick = current['high'] - max(current['open'], current['close'])
+    avg_body = df['close'].sub(df['open']).abs().tail(14).mean()
+    is_doji = body < avg_body * 0.15 and body < candle_range * 0.2
+
     # Check 3-candle continuation patterns first
     if len(df) >= 3:
         c1 = df.iloc[-3]
@@ -63,23 +72,29 @@ def candle_pattern(df):
                     if lower_wick2 < body2 * 0.3 and lower_wick3 < body3 * 0.3:
                         return "three_black_crows"
 
-    previous = df.iloc[-2]
-    current = df.iloc[-1]
-    body = abs(current["close"] - current["open"])
-    candle_range = max(current["high"] - current["low"], 0.0001)
-    lower_wick = min(current["open"], current["close"]) - current["low"]
-    upper_wick = current["high"] - max(current["open"], current["close"])
-
-    if current["close"] > current["open"] and previous["close"] < previous["open"] and current["close"] > previous["open"]:
-        return "bullish_engulfing"
-    if current["close"] < current["open"] and previous["close"] > previous["open"] and current["close"] < previous["open"]:
-        return "bearish_engulfing"
-    if body < candle_range * 0.1:
-        return "doji"
-    if lower_wick > body * 2 and upper_wick < body:
-        return "hammer"
-    if upper_wick > body * 2 and lower_wick < body:
-        return "shooting_star"
+    # Bullish Engulfing (check before Doji)
+    if (current['close'] > current['open']
+        and previous['close'] < previous['open']
+        and current['close'] > previous['open']
+        and current['open'] < previous['close']
+        and body > avg_body * 0.8):
+        return 'bullish_engulfing'
+    # Bearish Engulfing
+    if (current['close'] < current['open']
+        and previous['close'] > previous['open']
+        and current['close'] < previous['open']
+        and current['open'] > previous['close']
+        and body > avg_body * 0.8):
+        return 'bearish_engulfing'
+    # Hammer: small body, big lower wick, at bottom
+    if lower_wick > body * 2.0 and upper_wick < body * 0.5 and not is_doji:
+        return 'hammer'
+    # Shooting Star: small body, big upper wick, at top
+    if upper_wick > body * 2.0 and lower_wick < body * 0.5 and not is_doji:
+        return 'shooting_star'
+    # Doji — only if truly indecisive
+    if is_doji:
+        return 'doji'
     return None
 
 
@@ -97,7 +112,7 @@ def _score_single_timeframe(candles):
     structure, swings, structure_warning = detect_market_structure(candles)
     zones = detect_zones(candles, swings)
     fib = fibonacci_levels(candles, structure, swings) or {}
-    fvg = detect_fvg(candles)
+    FVG = detect_fvg(candles)
     bos = detect_bos(candles)
     liquidity = detect_liquidity(candles)
     pattern = candle_pattern(candles)
@@ -136,12 +151,15 @@ def _score_single_timeframe(candles):
         bearish_score += 12
         reasons.append("Bearish break of structure detected")
 
-    if fvg and fvg["type"] == "bullish":
-        bullish_score += 8
-        reasons.append("Bullish fair value gap is present")
-    elif fvg and fvg["type"] == "bearish":
-        bearish_score += 8
-        reasons.append("Bearish fair value gap is present")
+    if FVG:
+        is_unmitigated = (price > FVG["low"]) if FVG["type"] == "bullish" else (price < FVG["high"])
+        if is_unmitigated:
+            if FVG["type"] == "bullish":
+                bullish_score += 8
+                reasons.append("Bullish fair value gap is present (unmitigated)")
+            elif FVG["type"] == "bearish":
+                bearish_score += 8
+                reasons.append("Bearish fair value gap is present (unmitigated)")
 
     if liquidity == "liquidity_grab_buy":
         bullish_score += 10

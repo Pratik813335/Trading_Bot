@@ -1,4 +1,4 @@
-MIN_RISK_REWARD = 2.0
+MIN_RISK_REWARD = 2.5
 
 
 def fibonacci_levels(df, structure="bullish", swings=None):
@@ -96,20 +96,47 @@ def risk_reward(entry, stop_loss, take_profit, signal):
     return round(reward / risk, 2)
 
 
-def build_trade_plan(signal, price, atr_value, zones, fib, nearest_zone):
+def build_trade_plan(signal, price, atr_value, zones, fib, nearest_zone, swings=None):
     fib = fib or {}
+    hl_price = None
+    lh_price = None
+    
+    if swings:
+        if isinstance(swings, dict):
+            # V2 format
+            hl_list = swings.get("hl", [])
+            if hl_list:
+                hl_price = hl_list[-1]["price"] if isinstance(hl_list[-1], dict) else hl_list[-1]
+            lh_list = swings.get("lh", [])
+            if lh_list:
+                lh_price = lh_list[-1]["price"] if isinstance(lh_list[-1], dict) else lh_list[-1]
+        elif isinstance(swings, list):
+            # V1 format
+            lows = [s for s in swings if isinstance(s, dict) and s.get("type") == "low"]
+            highs = [s for s in swings if isinstance(s, dict) and s.get("type") == "high"]
+            if lows:
+                hl_price = lows[-1]["price"]
+            if highs:
+                lh_price = highs[-1]["price"]
+
     if signal == "BUY":
         support = nearest_zone(zones, "support", price, below=True)
         resistance = nearest_zone(zones, "resistance", price, below=False)
-        structural_sl = support["low"] if support else price - atr_value * 1.5
-        stop_loss = min(structural_sl, price - atr_value * 1.5)
+        if hl_price is not None:
+            stop_loss = min(hl_price - atr_value * 0.3, price - atr_value * 1.5)
+        else:
+            structural_sl = support["low"] if support else price - atr_value * 1.5
+            stop_loss = min(structural_sl, price - atr_value * 1.5)
         take_profit = resistance["mid"] if resistance else fib.get("ext_1.272", price + atr_value * 3)
         take_profit = max(take_profit, price + abs(price - stop_loss) * MIN_RISK_REWARD)
     elif signal == "SELL":
         resistance = nearest_zone(zones, "resistance", price, below=False)
         support = nearest_zone(zones, "support", price, below=True)
-        structural_sl = resistance["high"] if resistance else price + atr_value * 1.5
-        stop_loss = max(structural_sl, price + atr_value * 1.5)
+        if lh_price is not None:
+            stop_loss = max(lh_price + atr_value * 0.3, price + atr_value * 1.5)
+        else:
+            structural_sl = resistance["high"] if resistance else price + atr_value * 1.5
+            stop_loss = max(structural_sl, price + atr_value * 1.5)
         take_profit = support["mid"] if support else fib.get("ext_1.272", price - atr_value * 3)
         take_profit = min(take_profit, price - abs(stop_loss - price) * MIN_RISK_REWARD)
     else:
@@ -118,3 +145,4 @@ def build_trade_plan(signal, price, atr_value, zones, fib, nearest_zone):
 
     rr = risk_reward(price, stop_loss, take_profit, signal) if signal in ["BUY", "SELL"] else 0
     return round(stop_loss, 5), round(take_profit, 5), rr
+

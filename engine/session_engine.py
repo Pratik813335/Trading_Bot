@@ -232,12 +232,35 @@ class SessionEngine:
         except Exception:
             return None, None, None
 
-    def get_pip_size(self, symbol: str) -> float:
-        """Return pip size for the symbol."""
+    def get_pip_size(self, symbol: str, df: pd.DataFrame | None = None) -> float:
+        """Return pip size for the symbol, with auto-detection if price data is provided."""
         symbol = symbol.upper()
+        if df is not None and not df.empty:
+            try:
+                # Get the last close price
+                price = float(df["close"].dropna().iloc[-1])
+                # Format to a high precision, strip trailing zeros
+                price_str = f"{price:.8f}".rstrip('0')
+                parts = price_str.split('.')
+                decimals = len(parts[1]) if len(parts) > 1 else 0
+                
+                # Auto-detect based on decimal places
+                if decimals in [2, 3]:
+                    # JPY pairs (e.g. 156.45)
+                    return 0.01
+                elif decimals in [1]:
+                    # Gold (e.g. 2350.5)
+                    return 0.1
+                elif decimals >= 4:
+                    # Standard Forex (e.g. 1.08545)
+                    return 0.0001
+            except Exception:
+                pass
+
+        # Fallback to symbol-based naming rules
         if "JPY" in symbol:
             return 0.01
-        if symbol in ("XAUUSD",):
+        if symbol in ("XAUUSD", "GOLD"):
             return 0.1
         return 0.0001
 

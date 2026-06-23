@@ -21,6 +21,7 @@ from typing import Any
 import pandas as pd
 
 from engine.session_engine import SessionEngine, SessionState
+from config import MIN_CONFIRMATION_CONFIDENCE
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +48,7 @@ class SessionSignal:
     asian_range_low: float | None = None
     session_color: str = "#64748b"
     session_emoji: str = "⏳"
-    is_actionable: bool = False    # True only if confluences pass and confidence >= 70
+    is_actionable: bool = False    # True only if confluences pass and confidence >= MIN_CONFIRMATION_CONFIDENCE
     logged_at: str = ""
 
 
@@ -90,7 +91,7 @@ class SessionStrategyEngine:
         """
         Route to the correct strategy and return a SessionSignal.
         """
-        pip_size = self.session_engine.get_pip_size(symbol)
+        pip_size = self.session_engine.get_pip_size(symbol, candles)
 
         # Compute Asian range for dashboard reporting
         ar_high, ar_low, ar_pips = self.session_engine.compute_asian_range(candles, pip_size=pip_size)
@@ -225,9 +226,9 @@ class SessionStrategyEngine:
             reasoning=reason,
             confluences=confluences,
             warnings=warnings,
-            trade_action=direction if (is_actionable and confidence >= 70) else "WAIT",
+            trade_action=direction if (is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE) else "WAIT",
             pip_size=pip_size,
-            is_actionable=is_actionable and confidence >= 70,
+            is_actionable=is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE,
         )
 
     # ------------------------------------------------------------------
@@ -319,9 +320,9 @@ class SessionStrategyEngine:
             reasoning=reason,
             confluences=confluences,
             warnings=warnings,
-            trade_action=direction if (is_actionable and confidence >= 70) else "WAIT",
+            trade_action=direction if (is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE) else "WAIT",
             pip_size=pip_size,
-            is_actionable=is_actionable and confidence >= 70,
+            is_actionable=is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE,
         )
 
     # ------------------------------------------------------------------
@@ -412,9 +413,9 @@ class SessionStrategyEngine:
             reasoning=reason,
             confluences=confluences,
             warnings=warnings,
-            trade_action=direction if (is_actionable and confidence >= 70) else "WAIT",
+            trade_action=direction if (is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE) else "WAIT",
             pip_size=pip_size,
-            is_actionable=is_actionable and confidence >= 70,
+            is_actionable=is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE,
         )
 
     # ------------------------------------------------------------------
@@ -497,9 +498,9 @@ class SessionStrategyEngine:
             reasoning=reason,
             confluences=confluences,
             warnings=warnings,
-            trade_action=direction if (is_actionable and confidence >= 70) else "WAIT",
+            trade_action=direction if (is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE) else "WAIT",
             pip_size=pip_size,
-            is_actionable=is_actionable and confidence >= 70,
+            is_actionable=is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE,
         )
 
     # ------------------------------------------------------------------
@@ -596,9 +597,9 @@ class SessionStrategyEngine:
             reasoning=reason,
             confluences=confluences,
             warnings=warnings,
-            trade_action=direction if (is_actionable and confidence >= 70) else "WAIT",
+            trade_action=direction if (is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE) else "WAIT",
             pip_size=pip_size,
-            is_actionable=is_actionable and confidence >= 70,
+            is_actionable=is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE,
         )
 
     # ------------------------------------------------------------------

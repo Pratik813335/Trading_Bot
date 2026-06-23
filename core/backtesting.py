@@ -57,7 +57,7 @@ def _resolve_trade_outcome(signal_result, future_candles, max_holding_bars=12):
     }
 
 
-def run_backtest(df, timeframe="5", symbol="UNKNOWN", warmup_bars=50, max_holding_bars=12):
+def run_backtest(df, timeframe="5", symbol="UNKNOWN", strategy_name="Auto", warmup_bars=50, max_holding_bars=12):
     candles = df.reset_index(drop=True).copy()
     trades = []
     equity_r = 0.0
@@ -77,6 +77,7 @@ def run_backtest(df, timeframe="5", symbol="UNKNOWN", warmup_bars=50, max_holdin
         trade_record = {
             "symbol": symbol,
             "timeframe": timeframe,
+            "strategy": strategy_name,
             "index": end_index,
             "signal": signal_result["signal"],
             "confidence": signal_result["confidence"],
@@ -99,22 +100,65 @@ def run_backtest(df, timeframe="5", symbol="UNKNOWN", warmup_bars=50, max_holdin
         else:
             consecutive_losses = 0
 
+    # Calculate metrics
     wins = [trade for trade in trades if trade["r_multiple"] > 0]
     losses = [trade for trade in trades if trade["r_multiple"] < 0]
+    
+    avg_win = sum(trade["r_multiple"] for trade in wins) / len(wins) if wins else 0.0
+    avg_loss = sum(trade["r_multiple"] for trade in losses) / len(losses) if losses else 0.0
+    
+    win_rate = (len(wins) / len(trades)) * 100 if trades else 0.0
+    loss_rate = 100.0 - win_rate
+    
+    # Expectancy: (Win% * Avg Win R) + (Loss% * Avg Loss R)
+    expectancy = (win_rate / 100.0 * avg_win) + (loss_rate / 100.0 * avg_loss)
+
     gross_profit = sum(trade["r_multiple"] for trade in wins)
     gross_loss = abs(sum(trade["r_multiple"] for trade in losses))
+    profit_factor = gross_profit / gross_loss if gross_loss else (gross_profit if gross_profit else 0.0)
+
+    # 200+ trade requirement check
+    passed_200_gate = len(trades) >= 200
+    requirement_warning = ""
+    if not passed_200_gate:
+        requirement_warning = f"Backtesting warning: {len(trades)} trades completed. At least 200+ trades are required before trusting strategy results."
+
+    # Group by confidence buckets: High (>=70), Medium (55-69), Low (<55)
+    buckets = {"high": [], "medium": [], "low": []}
+    for t in trades:
+        conf = t["confidence"]
+        if conf >= 70:
+            buckets["high"].append(t)
+        elif conf >= 55:
+            buckets["medium"].append(t)
+        else:
+            buckets["low"].append(t)
+            
+    bucket_stats = {}
+    for name, b_trades in buckets.items():
+        b_wins = len([t for t in b_trades if t["r_multiple"] > 0])
+        b_total = len(b_trades)
+        bucket_stats[name] = {
+            "total": b_total,
+            "win_rate": round((b_wins / b_total) * 100, 2) if b_total else 0.0
+        }
 
     return {
         "symbol": symbol,
         "timeframe": timeframe,
+        "strategy": strategy_name,
         "total_trades": len(trades),
-        "win_rate": round((len(wins) / len(trades)) * 100, 2) if trades else 0.0,
-        "profit_factor": round(gross_profit / gross_loss, 2) if gross_loss else 0.0,
+        "win_rate": round(win_rate, 2),
+        "profit_factor": round(profit_factor, 2),
         "max_drawdown_r": round(abs(max_drawdown_r), 2),
         "average_r": round(sum(trade["r_multiple"] for trade in trades) / len(trades), 2) if trades else 0.0,
         "consecutive_losses": max_consecutive_losses,
         "wins": len(wins),
         "losses": len(losses),
         "open_or_flat": len([trade for trade in trades if trade["r_multiple"] == 0]),
+        "expectancy_r": round(expectancy, 2),
+        "passed_200_gate": passed_200_gate,
+        "requirement_warning": requirement_warning,
+        "confidence_buckets": bucket_stats,
         "trades": trades[-25:],
     }

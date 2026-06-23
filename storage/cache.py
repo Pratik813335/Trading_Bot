@@ -10,7 +10,27 @@ class InMemoryTTLCache:
         item = self._store.get(key)
         if not item:
             return None
-        if time.time() - item["stored_at"] > self.ttl_seconds:
+            
+        # Timeframe-specific TTL to optimize API load
+        ttl = self.ttl_seconds
+        if isinstance(key, tuple) and len(key) == 2:
+            timeframe = key[1]
+            if timeframe == "1":
+                ttl = 15
+            elif timeframe == "5":
+                ttl = 30
+            elif timeframe == "15":
+                ttl = 60
+            elif timeframe == "30":
+                ttl = 120
+            elif timeframe == "60":
+                ttl = 300
+            elif timeframe == "240":
+                ttl = 600
+            elif timeframe == "D":
+                ttl = 1800
+                
+        if time.time() - item["stored_at"] > ttl:
             self._store.pop(key, None)
             return None
         return item["value"]

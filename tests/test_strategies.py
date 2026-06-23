@@ -214,3 +214,98 @@ def test_carry_trade():
     )
     
     assert sig.strategy_used == "Carry Trade"
+
+
+def test_order_block_detection():
+    # Detect order blocks test
+    from core.market_structure import detect_order_blocks
+    # Build candles simulating a bullish OB
+    # Bullish OB is a bearish candle followed by a strong bullish candle
+    data = []
+    for i in range(10):
+        data.append({
+            "timestamp": datetime.now() - timedelta(minutes=5 * (10 - i)),
+            "open": 1.1000,
+            "high": 1.1005,
+            "low": 1.0995,
+            "close": 1.1002,
+        })
+    # Make candle at index -2 bearish
+    data[-2] = {
+        "timestamp": datetime.now() - timedelta(minutes=10),
+        "open": 1.1000,
+        "high": 1.1005,
+        "low": 1.0995,
+        "close": 1.0996, # bearish
+    }
+    # Make candle at index -1 strong bullish
+    data[-1] = {
+        "timestamp": datetime.now() - timedelta(minutes=5),
+        "open": 1.0996,
+        "high": 1.1015,
+        "low": 1.0995,
+        "close": 1.1012, # strong bullish
+    }
+    df = pd.DataFrame(data)
+    obs = detect_order_blocks(df)
+    assert len(obs) > 0
+    assert obs[0]["type"] == "bullish_ob"
+
+
+def test_structure_aware_sl():
+    # Test structure aware SL
+    from core.risk import build_trade_plan
+    # Define zones, swings, etc.
+    swings = {
+        "hl": [{"price": 1.0950, "index": 5}],
+        "lh": [{"price": 1.1050, "index": 5}]
+    }
+    sl, tp, rr = build_trade_plan(
+        signal="BUY",
+        price=1.1000,
+        atr_value=0.0010,
+        zones=[],
+        fib={},
+        nearest_zone=lambda zones, ztype, check_price, below=True: None,
+        swings=swings
+    )
+    # Price is 1.1000, swing low is 1.0950
+    # SL should be hl_price - atr * 0.3 = 1.0950 - 0.0003 = 1.0947
+    assert sl == 1.0947
+    assert tp >= 1.11325
+
+
+def test_choch_scoring():
+    from engine.signal_engine_v2 import SignalEngineV2
+    from engine.models import StructureState, FeedMetadata, SyncStatus
+    from engine.risk_engine import RiskEngine
+    
+    risk_engine = RiskEngine()
+    engine = SignalEngineV2(risk_engine)
+    
+    # Setup mock structure state with bullish CHOCH
+    structure_state = StructureState(
+        trend="bullish",
+        phase="continuation",
+        strength=1.0,
+        choch="bullish_choch",
+        order_blocks=[]
+    )
+    
+    df = build_mock_candles(rows=100)
+    metadata = FeedMetadata("EURUSD", "5", "Yahoo", "Yahoo", "EURUSD=X", datetime.now(), 0.1)
+    sync = SyncStatus("Yahoo", "5", 100, 100, 0, 100.0, "", "", 100.0, 0, 0.0)
+    
+    indicators = {
+        "ema50": 1.1500,
+        "ema200": 1.1200,
+        "adx14": 30.0,
+        "atr14": 0.0010,
+        "rsi14": 50.0,
+        "macd": 0.001,
+        "macd_signal": 0.0005,
+        "volume_avg": 2000.0
+    }
+    
+    decision = engine.generate("EURUSD", "5", df, metadata, sync, indicators, structure_state, [])
+    assert decision.confidence_breakdown.get("choch") == 8.0

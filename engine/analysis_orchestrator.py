@@ -179,6 +179,8 @@ class AnalysisOrchestrator:
 
         candles, indicator_snapshot = self.indicator_engine.enrich(market_frame.candles)
         structure_state = self.structure_engine.analyze(candles)
+        from core.market_structure import detect_order_blocks
+        structure_state.order_blocks = detect_order_blocks(candles, n_candles=50)
         zones = self.zone_engine.analyze(candles, structure_state)
         sync_status = self.signal_engine.risk_engine.evaluate_feed_quality(symbol, timeframe, candles, market_frame.metadata)
         signal = self.signal_engine.generate(
@@ -297,7 +299,7 @@ class AnalysisOrchestrator:
             self.signal_repository.close_position(active["logged_at"], "TRADE_REMOVED")
 
         # --- Multi-Timeframe Analysis ---
-        target_timeframes = ["1", "5", "15", "60", "D"]
+        target_timeframes = ["1", "5", "15", "60", "240", "D"]
         mtf_results = {}
         
         for tf in target_timeframes:
@@ -310,6 +312,8 @@ class AnalysisOrchestrator:
                 if tf_market_frame is not None and not tf_market_frame.candles.empty:
                     tf_candles, tf_indicators = self.indicator_engine.enrich(tf_market_frame.candles)
                     tf_structure = self.structure_engine.analyze(tf_candles)
+                    from core.market_structure import detect_order_blocks
+                    tf_structure.order_blocks = detect_order_blocks(tf_candles, n_candles=50)
                     tf_zones = self.zone_engine.analyze(tf_candles, tf_structure)
                     tf_sync = self.signal_engine.risk_engine.evaluate_feed_quality(
                         symbol, tf, tf_candles, tf_market_frame.metadata
@@ -335,7 +339,7 @@ class AnalysisOrchestrator:
             except Exception as e:
                 print(f"Error analyzing timeframe {tf}: {e}")
 
-        # Multi-timeframe rules evaluation
+        # Multi-timeframe rules evaluation (5-TF consensus score weighting)
         primary_dir = None
         if signal.signal in ["BUY", "STRONG_BUY"]:
             primary_dir = "BUY"
@@ -343,38 +347,57 @@ class AnalysisOrchestrator:
             primary_dir = "SELL"
 
         if primary_dir is not None:
-            htf_macro_trend = mtf_results.get("D", {}).get("structure", {}).trend if "D" in mtf_results else None
-            htf_mid_trend = mtf_results.get("60", {}).get("structure", {}).trend if "60" in mtf_results else None
+            TF_WEIGHTS = {'D': 5, '240': 4, '60': 3, '15': 2, '5': 1, '1': 1}
+            align_score = 0
+            conflict_score = 0
+            
+            for tf, res in mtf_results.items():
+                w = TF_WEIGHTS.get(tf, 1)
+                trend = res.get("structure").trend if res.get("structure") else "ranging"
+                sig = res.get("signal").signal if res.get("signal") else "NEUTRAL"
+                
+                is_aligned = False
+                is_conflicting = False
+                
+                if primary_dir == "BUY":
+                    if trend == "bullish" or sig in ["BUY", "STRONG_BUY"]:
+                        is_aligned = True
+                    elif trend == "bearish" or sig in ["SELL", "STRONG_SELL"]:
+                        is_conflicting = True
+                elif primary_dir == "SELL":
+                    if trend == "bearish" or sig in ["SELL", "STRONG_SELL"]:
+                        is_aligned = True
+                    elif trend == "bullish" or sig in ["BUY", "STRONG_BUY"]:
+                        is_conflicting = True
+                        
+                if is_aligned:
+                    align_score += w
+                elif is_conflicting:
+                    conflict_score += w
 
-            conflict_count = 0
-            alignment_count = 0
-
-            if htf_macro_trend and htf_macro_trend != "ranging":
-                if (primary_dir == "BUY" and htf_macro_trend == "bearish") or (primary_dir == "SELL" and htf_macro_trend == "bullish"):
-                    conflict_count += 1
-                elif (primary_dir == "BUY" and htf_macro_trend == "bullish") or (primary_dir == "SELL" and htf_macro_trend == "bearish"):
-                    alignment_count += 1
-
-            if htf_mid_trend and htf_mid_trend != "ranging":
-                if (primary_dir == "BUY" and htf_mid_trend == "bearish") or (primary_dir == "SELL" and htf_mid_trend == "bullish"):
-                    conflict_count += 1
-                elif (primary_dir == "BUY" and htf_mid_trend == "bullish") or (primary_dir == "SELL" and htf_mid_trend == "bearish"):
-                    alignment_count += 1
-
-            if conflict_count == 2:
+            # Apply consensus rules
+            if conflict_score >= 8:
                 signal.signal = "NO_TRADE"
                 signal.stop_loss = 0.0
                 signal.tp1 = 0.0
                 signal.tp2 = 0.0
                 signal.rr_ratio = 0.0
                 signal.reasons = ["HTF Bias Conflict"] + [r for r in signal.reasons if r != "ANALYSIS BLOCKED"]
-                signal.warnings = ["No trade: higher timeframe bias strongly conflicts with entry direction"] + list(signal.warnings)
-            elif conflict_count == 1:
-                signal.confidence = max(0.0, signal.confidence - 15.0)
-                signal.warnings = ["Multi-timeframe conflict: Higher timeframe bias conflicts with entry direction"] + list(signal.warnings)
-            elif alignment_count == 2:
-                signal.confidence = min(95.0, signal.confidence + 10.0)
-                signal.reasons = [f"HTF alignment (1H & 1D {'Bullish' if primary_dir == 'BUY' else 'Bearish'})"] + list(signal.reasons)
+                signal.warnings = [f"No trade: Multi-timeframe conflict score {conflict_score} >= 8 conflicts with entry direction"] + list(signal.warnings)
+            else:
+                if align_score >= 10:
+                    signal.confidence = min(95.0, signal.confidence + 15.0)
+                    signal.reasons = ["Strong HTF alignment (+15)"] + list(signal.reasons)
+                elif align_score >= 7:
+                    signal.confidence = min(95.0, signal.confidence + 8.0)
+                    signal.reasons = ["HTF alignment (+8)"] + list(signal.reasons)
+                    
+                if 5 <= conflict_score < 7:
+                    signal.confidence = max(0.0, signal.confidence - 20.0)
+                    signal.warnings = ["MTF conflict penalty: -20 confidence (conflict score 5-6)"] + list(signal.warnings)
+                elif 3 <= conflict_score < 5:
+                    signal.confidence = max(0.0, signal.confidence - 10.0)
+                    signal.warnings = ["MTF conflict penalty: -10 confidence (conflict score 3-4)"] + list(signal.warnings)
 
         # Build multi-timeframe analysis summaries
         mtf_analysis = {}
@@ -429,6 +452,14 @@ class AnalysisOrchestrator:
                     "macd_status": macd_status,
                 }
 
+        # Fetch news signals for G8 validation and UI rendering
+        news_signals = []
+        if self.forex_factory_feed and self.news_engine:
+            try:
+                news_signals = self.analyze_news(symbol, timeframe, indicator_snapshot)
+            except Exception:
+                pass
+
         provisional_ai = self.ai_service.explain(signal)
         provisional_trade_payload = self._build_trade_payload(signal, provisional_ai, zones)
         ai_explanation = self.ai_service.explain(
@@ -443,6 +474,19 @@ class AnalysisOrchestrator:
             signal.warnings = list(signal.warnings) + [f"Gemini: {warning}" for warning in ai_explanation["warnings"]]
         if ai_explanation.get("risks"):
             signal.warnings = list(signal.warnings) + [f"Gemini risk: {risk}" for risk in ai_explanation["risks"]]
+
+        # ── 10-Gate Quality Validator Check ──
+        self.validate_10_gates(
+            signal=signal,
+            sync_status=sync_status,
+            structure_state=structure_state,
+            indicators=indicator_snapshot,
+            zones=zones,
+            news_signals=news_signals,
+            ai_explanation=ai_explanation,
+            forced_strategy=forced_strategy
+        )
+
         signal, ai_explanation, trade_payload = self._enforce_trade_contract(signal, ai_explanation, zones)
         chart_payload = self.renderer.build_chart_payload(symbol, timeframe, candles, zones, structure_state, signal, market_frame.metadata)
         analysis_contract = self._build_analysis_contract(
@@ -480,10 +524,107 @@ class AnalysisOrchestrator:
             chart_payload=chart_payload,
             analysis_contract=analysis_contract,
             trade_payload=trade_payload,
-            news_signals=[],  # populated separately via analyze_news()
+            news_signals=news_signals,
             session_signal=session_signal,
             mtf_analysis=mtf_analysis,
         )
+
+    def validate_10_gates(self, signal, sync_status, structure_state, indicators, zones, news_signals, ai_explanation, forced_strategy=None):
+        gate_failures = []
+        gate_warnings = []
+        
+        # G1: Data Quality
+        from data.timeframe_builder import TIMEFRAME_TO_MINUTES
+        tf_minutes = TIMEFRAME_TO_MINUTES.get(signal.timeframe, 5)
+        if tf_minutes == 'D':
+            tf_minutes = 1440
+        else:
+            try:
+                tf_minutes = int(tf_minutes)
+            except Exception:
+                tf_minutes = 5
+        data_age_minutes = (sync_status.data_age_seconds or 0.0) / 60.0
+        if data_age_minutes > 3 * tf_minutes:
+            gate_failures.append(f"G1 Fail: Stale Data ({data_age_minutes:.1f}m old, max {3 * tf_minutes}m)")
+
+        # G2: Market Structure (Skip structure check if we are explicitly running Range Trader strategy)
+        if signal.signal in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
+            if forced_strategy != "Range Trader":
+                if structure_state.trend in ["range", "ranging", "mixed"]:
+                    gate_failures.append("G2 Fail: Ranging Market structure trend")
+
+        # G3: HTF Bias
+        if signal.signal in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
+            if "HTF Bias Conflict" in signal.reasons:
+                gate_failures.append("G3 Fail: HTF Bias Conflict")
+
+        # G4: Min Confluences
+        if signal.signal in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
+            active_conf = sum(1 for v in signal.confidence_breakdown.values() if v > 0)
+            from config import MIN_CONFIRMATIONS
+            if active_conf < MIN_CONFIRMATIONS:
+                gate_failures.append(f"G4 Fail: Insufficient Confluence ({active_conf} < {MIN_CONFIRMATIONS})")
+
+        # G5: Score Gap
+        if signal.signal in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
+            if "Insufficient confluence" in "".join(signal.warnings) and "gap" in "".join(signal.warnings):
+                gate_failures.append("G5 Fail: Score gap below threshold")
+
+        # G6: ADX Trend Strength
+        adx = indicators.get("adx14", 0.0)
+        if signal.signal in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
+            if adx < 20:
+                gate_warnings.append(f"G6 Warning: Weak Trend Strength (ADX: {adx:.1f} < 20)")
+
+        # G7: Risk-Reward
+        if signal.signal in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
+            from core.risk import MIN_RISK_REWARD
+            if signal.rr_ratio < MIN_RISK_REWARD:
+                gate_failures.append(f"G7 Fail: Risk:Reward too low ({signal.rr_ratio:.2f} < {MIN_RISK_REWARD})")
+
+        # G8: News Filter
+        for ns in news_signals:
+            if ns.impact == "HIGH" and not ns.entry_allowed:
+                gate_failures.append(f"G8 Fail: High-impact news event '{ns.event_name}' in block window")
+
+        # G9: AI Validation
+        ai_score = ai_explanation.get("quality_score")
+        if ai_score is not None:
+            try:
+                if float(ai_score) < 60:
+                    signal.confidence = max(0.0, signal.confidence - 15.0)
+                    gate_warnings.append(f"G9 Warning: AI score below threshold ({ai_score} < 60), confidence -15")
+            except Exception:
+                pass
+
+        # G10: Pattern Check
+        pattern = signal.structure.get("candle_pattern") or signal.structure.get("pattern")
+        if signal.signal in ["BUY", "STRONG_BUY"] and pattern in ["bearish_engulfing", "shooting_star", "three_black_crows"]:
+            signal.confidence = max(0.0, signal.confidence - 5.0)
+            gate_warnings.append(f"G10 Warning: Conflicting pattern '{pattern}' on BUY, confidence -5")
+        elif signal.signal in ["SELL", "STRONG_SELL"] and pattern in ["bullish_engulfing", "hammer", "three_white_soldiers"]:
+            signal.confidence = max(0.0, signal.confidence - 5.0)
+            gate_warnings.append(f"G10 Warning: Conflicting pattern '{pattern}' on SELL, confidence -5")
+        elif pattern == "doji" and signal.signal in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
+            signal.confidence = max(0.0, signal.confidence - 5.0)
+            gate_warnings.append("G10 Warning: Doji candle at entry, confidence -5")
+
+        # Apply gate failure actions
+        if gate_failures:
+            signal.signal = "NO_TRADE"
+            signal.stop_loss = 0.0
+            signal.tp1 = 0.0
+            signal.tp2 = 0.0
+            signal.rr_ratio = 0.0
+            for fail in gate_failures:
+                if fail not in signal.reasons:
+                    signal.reasons.append(fail)
+                if fail not in signal.warnings:
+                    signal.warnings.append(fail)
+                    
+        for warn in gate_warnings:
+            if warn not in signal.warnings:
+                signal.warnings.append(warn)
 
     def analyze_news(
         self,

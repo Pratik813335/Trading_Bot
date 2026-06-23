@@ -16,12 +16,19 @@ MT5_TIMEFRAMES = {
     "MN1": mt5.TIMEFRAME_MN1
 }
 
+_mt5_available = True
+
 def find_mt5_symbol(symbol):
+    global _mt5_available
+    if not _mt5_available:
+        return symbol
     # Attempt to initialize MT5 to check symbols
     try:
         if not mt5.initialize():
+            _mt5_available = False
             return symbol
     except Exception:
+        _mt5_available = False
         return symbol
         
     all_symbols = mt5.symbols_get()
@@ -43,7 +50,11 @@ def find_mt5_symbol(symbol):
 
 
 def initialize_mt5():
+    global _mt5_available
+    if not _mt5_available:
+        raise Exception("MT5 is marked as unavailable (previous initialization failed)")
     if not mt5.initialize():
+        _mt5_available = False
         raise Exception(f"MT5 initialize() failed, error code = {mt5.last_error()}")
         
     # Connect to the specific account if credentials are provided

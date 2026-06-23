@@ -82,4 +82,36 @@ class RiskEngine:
             reasons.append(f"Feed mismatch: missing bars {sync_status.missing_candles} exceed 2")
         if sync_status.latency_ms > 3000:
             reasons.append(f"Feed mismatch: latency {sync_status.latency_ms}ms exceeds 3000ms")
+        
+        # Enforce 3% daily account loss limit
+        if self.check_daily_loss_limit():
+            reasons.append("Daily loss limit exceeded (3% account protection active)")
+            
         return reasons
+
+    def check_daily_loss_limit(self) -> bool:
+        from storage.trade_journal import TradeJournal
+        from config import INITIAL_BALANCE
+        try:
+            journal = TradeJournal()
+            df_trades = journal.get_all_trades()
+            if df_trades.empty:
+                return False
+            
+            # Format today's date to match closed trade logs
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            df_closed_today = df_trades[
+                df_trades["close_time"].str.startswith(today_str, na=False) &
+                (df_trades["status"].str.upper() != "OPEN")
+            ]
+            if df_closed_today.empty:
+                return False
+            
+            total_today_pnl = df_closed_today["pnl"].sum()
+            loss_limit = INITIAL_BALANCE * 0.03  # 3% of $10,000 = $300
+            
+            if total_today_pnl < -loss_limit:
+                return True
+        except Exception:
+            pass
+        return False
