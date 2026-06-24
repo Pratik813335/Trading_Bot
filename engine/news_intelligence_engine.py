@@ -328,11 +328,11 @@ def _risk_control_gates(
     """
     gates: list[str] = []
 
-    if event.impact_level != "HIGH":
-        gates.append(f"WAIT: Impact is {event.impact_level}, only HIGH-impact events are actionable")
+    if event.impact_level not in ("HIGH", "MEDIUM"):
+    gates.append(f"WAIT: Only HIGH/MEDIUM events are actionable")
 
-    if confidence < 80:
-        gates.append(f"WAIT: Confidence {confidence}/100 is below threshold of 80")
+if confidence < 65:
+    gates.append(f"WAIT: Confidence {confidence}/100 below threshold of 65")
 
     if age_mins > NEWS_MAX_AGE_MINUTES:
         gates.append(f"WAIT: Event is {age_mins:.0f} minutes old (max {NEWS_MAX_AGE_MINUTES})")

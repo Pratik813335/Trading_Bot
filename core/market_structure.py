@@ -22,8 +22,7 @@ def detect_market_structure(df):
     if len(highs) < 2 or len(lows) < 2:
         recent_close = df["close"].iloc[-1]
         previous_close = df["close"].iloc[-min(len(df), 20)]
-        fallback = "bullish" if recent_close > previous_close else "bearish"
-        return fallback, swings, "Structure fallback used because swing history is limited"
+        return "range", swings, "Insufficient swing history — structure undetermined, skipping scoring"
 
     higher_highs = highs[-1]["price"] > highs[-2]["price"]
     higher_lows = lows[-1]["price"] > lows[-2]["price"]
