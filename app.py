@@ -1,4 +1,5 @@
 import json
+import uuid
 
 import pandas as pd
 import streamlit as st
@@ -38,6 +39,21 @@ def init_session_state():
         "news_signals_symbol": "",
         "news_signals_timeframe": "",
         "news_signals_fetched_at": 0.0,
+        # Live analysis states
+        "live_mode": False,
+        "is_analyzing": False,
+        "last_analysis_time": "Never",
+        "last_analysis_time_dt": None,
+        "last_price": None,
+        "last_candle_time": None,
+        "analysis_status": "STOPPED",
+        "update_trigger_reason": "System Start",
+        "refresh_sec": 5,
+        "pips_thresh": 2.0,
+        "trigger_mode": "Hybrid (Smart Triggers)",
+        "session_uuid": str(uuid.uuid4()),
+        "force_analyze": False,
+        "last_active_position_id": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -1955,6 +1971,7 @@ import threading
 import urllib.parse
 
 _global_orchestrator = None
+_tab_visibility = {}
 
 class PanelApiHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -2011,6 +2028,18 @@ class PanelApiHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(500)
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+        elif parsed_url.path == '/visibility':
+            query = urllib.parse.parse_qs(parsed_url.query)
+            state = query.get('state', ['visible'])[0]
+            session_id = query.get('session_id', ['default'])[0]
+            global _tab_visibility
+            _tab_visibility[session_id] = state
+            
+            self.send_response(200)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{"status": "ok"}')
         else:
             self.send_response(404)
             self.end_headers()
@@ -2049,6 +2078,178 @@ forex_factory_feed = container.get("forex_factory_feed")
 
 start_panel_api_server()
 
+def adjust_live_engine_config(symbol, timeframe):
+    """
+    Dynamically auto-adjusts Live Engine parameters (refresh_sec, pips_thresh, trigger_mode)
+    based on timeframe, volatility (ATR), trading session activity, and news releases.
+    Runs silently in the background.
+    """
+    from datetime import datetime, timezone
+    
+    # Timeframe base configurations
+    tf_configs = {
+        "1": {"refresh": 2, "pips": 1.0},
+        "5": {"refresh": 4, "pips": 1.5},
+        "15": {"refresh": 8, "pips": 2.5},
+        "30": {"refresh": 12, "pips": 4.0},
+        "60": {"refresh": 15, "pips": 6.0},
+        "1H": {"refresh": 15, "pips": 6.0},
+        "240": {"refresh": 30, "pips": 12.0},
+        "4H": {"refresh": 30, "pips": 12.0},
+        "D": {"refresh": 60, "pips": 25.0},
+        "1440": {"refresh": 60, "pips": 25.0},
+    }
+    
+    config = tf_configs.get(timeframe, {"refresh": 5, "pips": 2.0})
+    refresh_sec = config["refresh"]
+    pips_thresh = config["pips"]
+    trigger_mode = "Hybrid (Smart Triggers)"
+    
+    # ATR Volatility adaptation
+    bundle = st.session_state.get("analysis_bundle")
+    pip_size = 0.0001
+    if symbol == "XAUUSD" or "JPY" in symbol or "BTC" in symbol:
+        pip_size = 0.01
+
+    if bundle and hasattr(bundle, "chart_payload") and bundle.chart_payload:
+        atr_val = bundle.chart_payload.get("indicators", {}).get("atr")
+        if atr_val is not None:
+            atr_pips = float(atr_val) / pip_size
+            if atr_pips > 0:
+                pips_thresh = max(1.0, min(15.0, atr_pips * 0.20))
+                
+    # Session time activity scaling
+    now_utc = datetime.now(timezone.utc)
+    current_hour = now_utc.hour
+    if 12 <= current_hour <= 17:
+        refresh_sec = max(2, refresh_sec - 1)
+    elif 21 <= current_hour or current_hour <= 1:
+        refresh_sec = refresh_sec + 3
+        
+    # High-impact news boost
+    news_boost = False
+    global orchestrator
+    forex_factory_feed = getattr(orchestrator, "forex_factory_feed", None)
+    if forex_factory_feed:
+        try:
+            currency = symbol[:3]
+            events = forex_factory_feed.fetch_for_currency(currency) or []
+            if len(symbol) >= 6:
+                other_curr = symbol[3:6]
+                events += (forex_factory_feed.fetch_for_currency(other_curr) or [])
+                
+            for event in events:
+                if getattr(event, "impact_level", "LOW") == "HIGH" and event.publication_time:
+                    pub_str = event.publication_time.replace("Z", "+00:00")
+                    pub_dt = datetime.fromisoformat(pub_str)
+                    time_diff = (pub_dt - now_utc).total_seconds()
+                    if -900 <= time_diff <= 1800:
+                        news_boost = True
+                        break
+        except Exception:
+            pass
+
+    if news_boost:
+        refresh_sec = 2
+        pips_thresh = max(1.0, pips_thresh * 0.75)
+        
+    st.session_state.refresh_sec = refresh_sec
+    st.session_state.pips_thresh = pips_thresh
+    st.session_state.trigger_mode = trigger_mode
+
+
+def check_reanalysis_triggers(symbol, timeframe, forced_strategy):
+    # Check if active position has closed (SL/TP hit or early close)
+    current_active = signal_repository.get_active_position(symbol)
+    current_active_id = current_active.get("logged_at") if current_active else None
+    prev_active_id = st.session_state.get("last_active_position_id")
+    
+    if prev_active_id is not None and current_active_id is None:
+        st.session_state.last_active_position_id = None
+        return True, "Active position closed (SL/TP hit or invalidated)"
+        
+    st.session_state.last_active_position_id = current_active_id
+
+    last_candle_time = st.session_state.get("last_candle_time")
+    last_price = st.session_state.get("last_price")
+    last_analysis_time_dt = st.session_state.get("last_analysis_time_dt")
+    
+    # 1. Fetch fresh data (bypass cache)
+    try:
+        market_frame = orchestrator.market_feed.fetch(symbol, timeframe, force_refresh=True)
+    except Exception as e:
+        return False, f"Feed fetch error: {e}"
+        
+    if market_frame is None or market_frame.candles.empty:
+        return False, "Empty feed"
+        
+    candles = market_frame.candles
+    last_row = candles.iloc[-1]
+    current_price = float(last_row["close"])
+    
+    if isinstance(last_row.name, pd.Timestamp):
+        current_candle_time = last_row.name.isoformat()
+    else:
+        current_candle_time = str(last_row.name)
+    
+    # 2. Check if a new candle is formed
+    if last_candle_time is not None and current_candle_time != last_candle_time:
+        return True, "New candle formed"
+        
+    # 3. Check if price moved beyond threshold
+    if last_price is not None:
+        pip_size = 0.0001
+        try:
+            pip_size = orchestrator.session_engine.get_pip_size(symbol, candles)
+        except Exception:
+            if "JPY" in symbol or "BTC" in symbol or symbol == "XAUUSD":
+                pip_size = 0.01
+        
+        price_diff = abs(current_price - last_price)
+        threshold_price = st.session_state.get("pips_thresh", 2.0) * pip_size
+        if price_diff >= threshold_price:
+            return True, f"Price moved {price_diff/pip_size:.1f} pips"
+            
+    # 4. Check if time interval elapsed since last run
+    if last_analysis_time_dt is not None:
+        from datetime import datetime, timezone
+        elapsed = (datetime.now(timezone.utc) - last_analysis_time_dt).total_seconds()
+        if elapsed >= st.session_state.get("refresh_sec", 5):
+            return True, f"Timer elapsed ({st.session_state.get('refresh_sec')}s)"
+            
+    # 5. Check if indicators crossed key levels (RSI crosses 30/70, MACD crossover)
+    try:
+        enriched_candles, _ = orchestrator.indicator_engine.enrich(candles)
+        if len(enriched_candles) >= 2:
+            prev_row = enriched_candles.iloc[-2]
+            curr_row = enriched_candles.iloc[-1]
+            
+            # RSI cross
+            if "rsi14" in curr_row and "rsi14" in prev_row:
+                c_rsi = curr_row["rsi14"]
+                p_rsi = prev_row["rsi14"]
+                if (p_rsi <= 30 < c_rsi) or (p_rsi >= 30 > c_rsi) or (p_rsi <= 70 < c_rsi) or (p_rsi >= 70 > c_rsi):
+                    return True, f"RSI crossover ({c_rsi:.1f})"
+            
+            # MACD cross
+            if "macd" in curr_row and "macd_signal" in curr_row and "macd" in prev_row and "macd_signal" in prev_row:
+                c_macd, c_sig = curr_row["macd"], curr_row["macd_signal"]
+                p_macd, p_sig = prev_row["macd"], prev_row["macd_signal"]
+                if (p_macd <= p_sig and c_macd > c_sig) or (p_macd >= p_sig and c_macd < c_sig):
+                    return True, "MACD crossover"
+                    
+            # EMA alignment check
+            for ema_col in ["ema50", "ema200"]:
+                if ema_col in curr_row and ema_col in prev_row:
+                    c_ema, p_ema = curr_row[ema_col], prev_row[ema_col]
+                    c_close, p_close = curr_row["close"], prev_row["close"]
+                    if (p_close <= p_ema and c_close > c_ema) or (p_close >= p_ema and c_close < c_ema):
+                        return True, f"EMA crossover ({ema_col})"
+    except Exception:
+        pass
+        
+    return False, "No trigger met"
+
 with st.container():
     control_cols = st.columns([1.0, 0.8, 1.5, 1.0], gap="medium")
     with control_cols[0]:
@@ -2064,16 +2265,85 @@ with st.container():
         )
     with control_cols[3]:
         st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-        run_analysis = st.button("Run Analysis", type="primary", use_container_width=True)
+        if st.session_state.get("live_mode", False):
+            if st.button("Stop Analysis", type="secondary", use_container_width=True):
+                st.session_state.live_mode = False
+                st.session_state.analysis_running = False
+                st.session_state.analysis_status = "STOPPED"
+                st.session_state.update_trigger_reason = "Manual Stop"
+                st.rerun()
+        else:
+            if st.button("Run Analysis", type="primary", use_container_width=True):
+                st.session_state.live_mode = True
+                st.session_state.analysis_running = True
+                st.session_state.analysis_status = "LIVE"
+                st.session_state.update_trigger_reason = "Manual Run"
+                st.session_state.force_analyze = True
+                st.rerun()
 
-# Auto-run analysis if the bundle is None, or if selected symbol/timeframe/strategy changed, or on manual click
-if (st.session_state.analysis_bundle is None or 
+# Live Engine settings are auto-adjusted in the background
+adjust_live_engine_config(symbol, timeframe)
+trigger_mode = st.session_state.get("trigger_mode", "Hybrid (Smart Triggers)")
+refresh_sec = int(st.session_state.get("refresh_sec", 5))
+pips_thresh = float(st.session_state.get("pips_thresh", 2.0))
+
+
+# 1. Reset trackers if settings changed
+settings_changed = (
     st.session_state.analysis_symbol != symbol or 
     st.session_state.analysis_timeframe != timeframe or 
-    st.session_state.get("selected_strategy") != selected_strategy or
-    run_analysis):
-    
+    st.session_state.get("selected_strategy") != selected_strategy
+)
+
+if settings_changed:
     st.session_state.selected_strategy = selected_strategy
+    st.session_state.analysis_symbol = symbol
+    st.session_state.analysis_timeframe = timeframe
+    st.session_state.last_candle_time = None
+    st.session_state.last_price = None
+    st.session_state.force_analyze = True
+    st.session_state.update_trigger_reason = "Settings Changed"
+
+# 2. Check reanalysis criteria or force run
+should_run = False
+trigger_reason = "n/a"
+
+if st.session_state.analysis_bundle is None or st.session_state.force_analyze:
+    should_run = True
+    trigger_reason = st.session_state.get("update_trigger_reason", "Initial Run")
+elif st.session_state.live_mode:
+    t_mode = st.session_state.get("trigger_mode", "Hybrid (Smart Triggers)")
+    
+    if t_mode == "Time-Based Only":
+        if st.session_state.last_analysis_time_dt is not None:
+            from datetime import datetime, timezone
+            elapsed = (datetime.now(timezone.utc) - st.session_state.last_analysis_time_dt).total_seconds()
+            if elapsed >= st.session_state.refresh_sec:
+                should_run = True
+                trigger_reason = f"Timer elapsed ({st.session_state.refresh_sec}s)"
+    elif t_mode == "Candle-Close Only":
+        try:
+            m_frame = orchestrator.market_feed.fetch(symbol, timeframe, force_refresh=True)
+            if m_frame is not None and not m_frame.candles.empty:
+                last_row = m_frame.candles.iloc[-1]
+                curr_candle_time = last_row.name.isoformat() if isinstance(last_row.name, pd.Timestamp) else str(last_row.name)
+                if st.session_state.last_candle_time is not None and curr_candle_time != st.session_state.last_candle_time:
+                    should_run = True
+                    trigger_reason = "New candle formed"
+        except Exception as e:
+            trigger_reason = f"Feed error: {e}"
+    else:
+        # Default is Hybrid (Smart Triggers)
+        forced = None if selected_strategy == "Auto (Session-Aware)" else selected_strategy
+        should_run, trigger_reason = check_reanalysis_triggers(symbol, timeframe, forced)
+
+# 3. Perform analysis if triggered
+if should_run and not st.session_state.is_analyzing:
+    st.session_state.is_analyzing = True
+    st.session_state.analysis_status = "ANALYZING"
+    st.session_state.update_trigger_reason = trigger_reason
+    st.session_state.force_analyze = False
+    
     forced = None if selected_strategy == "Auto (Session-Aware)" else selected_strategy
     orchestrator.forced_strategy = forced
     if _global_orchestrator:
@@ -2081,15 +2351,32 @@ if (st.session_state.analysis_bundle is None or
         
     bundle = None
     with st.spinner("⏳ Analyzing market structure and executing rule checks..."):
-        bundle = orchestrator.analyze(symbol, timeframe, forced_strategy=forced)
-
+        try:
+            bundle = orchestrator.analyze(symbol, timeframe, forced_strategy=forced, force_refresh=True)
+        except Exception as e:
+            st.session_state.analysis_status = "ERROR"
+            st.session_state.update_trigger_reason = f"Error: {e}"
+            
     if bundle is None:
-        st.error("Unable to build analysis bundle from the configured feeds.")
+        st.session_state.analysis_status = "ERROR"
+        st.session_state.update_trigger_reason = "Failed to fetch/analyze data"
     else:
         st.session_state.analysis_bundle = bundle
         st.session_state.analysis_symbol = symbol
         st.session_state.analysis_timeframe = timeframe
         orchestrator.log_signal(bundle)
+        
+        # Update trackers
+        from datetime import datetime, timezone
+        st.session_state.last_analysis_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        st.session_state.last_analysis_time_dt = datetime.now(timezone.utc)
+        
+        last_row = bundle.candles.iloc[-1]
+        st.session_state.last_price = float(last_row["close"])
+        st.session_state.last_candle_time = last_row.name.isoformat() if isinstance(last_row.name, pd.Timestamp) else str(last_row.name)
+        st.session_state.analysis_status = "LIVE" if st.session_state.live_mode else "IDLE"
+
+    st.session_state.is_analyzing = False
 
 bundle = st.session_state.analysis_bundle
 
@@ -2097,21 +2384,109 @@ if bundle is None:
     st.info("Select a symbol and timeframe, then click `Run Analysis`.")
     st.stop()
 
+# ── Visibility component injection ──
+session_id_js = st.session_state.session_uuid
+components.html(
+    f"""
+    <script>
+        const sessionId = "{session_id_js}";
+        const endpoint = "http://127.0.0.1:8505/visibility";
+        
+        function sendVisibility(state) {{
+            fetch(`${{endpoint}}?session_id=${{sessionId}}&state=${{state}}`, {{ mode: "no-cors" }})
+                .catch(err => console.error("Visibility post failed", err));
+        }}
+        
+        if (window.parent && window.parent.document) {{
+            sendVisibility(window.parent.document.visibilityState);
+            window.parent.document.addEventListener("visibilitychange", () => {{
+                sendVisibility(window.parent.document.visibilityState);
+            }});
+        }} else {{
+            sendVisibility(document.visibilityState);
+            document.addEventListener("visibilitychange", () => {{
+                sendVisibility(document.visibilityState);
+            }});
+        }}
+    </script>
+    """,
+    height=0,
+    width=0
+)
+
+# ── Premium Live Analysis Dashboard Card ──
+status_label = st.session_state.get("analysis_status", "STOPPED")
+reason = st.session_state.get("update_trigger_reason", "System Start")
+last_time = st.session_state.get("last_analysis_time", "Never")
+
+next_check = "n/a"
+if st.session_state.live_mode and st.session_state.last_analysis_time_dt is not None:
+    from datetime import datetime, timezone
+    elapsed = (datetime.now(timezone.utc) - st.session_state.last_analysis_time_dt).total_seconds()
+    remaining = max(0.0, float(st.session_state.refresh_sec) - elapsed)
+    next_check = f"~{int(remaining)}s"
+
+current_sig = bundle.signal.signal if bundle else "--"
+current_conf = f"{bundle.signal.confidence:.2f}%" if bundle and bundle.signal.confidence is not None else "--"
+current_bias = bundle.chart_payload.get("overlays", {}).get("structure", {}).get("trend", "n/a").upper() if bundle else "--"
+
+badge_color = {
+    "LIVE": "#0284c7",
+    "ANALYZING": "#fb7185",
+    "IDLE": "#10b981",
+    "STOPPED": "#64748b",
+    "ERROR": "#ef4444"
+}.get(status_label, "#64748b")
+
+st.markdown(
+    f"""
+    <div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 15px; margin-bottom: 20px; padding: 16px; background: rgba(255, 255, 255, 0.95); border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 20px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.04); backdrop-filter: blur(10px);'>
+        <div style='border-right: 1px solid rgba(148, 163, 184, 0.15); padding-right: 10px;'>
+            <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;'>Engine Status</div>
+            <div style='display: flex; align-items: center; gap: 6px; margin-top: 4px;'>
+                <span style='height: 8px; width: 8px; border-radius: 50%; background-color: {badge_color}; display: inline-block;'></span>
+                <span style='font-size: 15px; font-weight: 800; color: {badge_color};'>{status_label}</span>
+            </div>
+        </div>
+        <div style='border-right: 1px solid rgba(148, 163, 184, 0.15); padding-right: 10px;'>
+            <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;'>Last Update Reason</div>
+            <div style='font-size: 14px; font-weight: 700; color: #0f172a; margin-top: 4px;'>{reason}</div>
+        </div>
+        <div style='border-right: 1px solid rgba(148, 163, 184, 0.15); padding-right: 10px;'>
+            <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;'>Last Analysis Time</div>
+            <div style='font-size: 14px; font-weight: 700; color: #0f172a; margin-top: 4px;'>{last_time}</div>
+        </div>
+        <div style='border-right: 1px solid rgba(148, 163, 184, 0.15); padding-right: 10px;'>
+            <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;'>Next Check In</div>
+            <div style='font-size: 14px; font-weight: 700; color: #0f172a; margin-top: 4px;'>{next_check}</div>
+        </div>
+        <div style='border-right: 1px solid rgba(148, 163, 184, 0.15); padding-right: 10px;'>
+            <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;'>Market Bias</div>
+            <div style='font-size: 14px; font-weight: 700; color: #0f172a; margin-top: 4px;'>{current_bias}</div>
+        </div>
+        <div>
+            <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;'>Signal / Confidence</div>
+            <div style='font-size: 14px; font-weight: 700; color: #0f172a; margin-top: 4px;'>{current_sig} ({current_conf})</div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
 render_section_header("Chart Workspace", "Live interactive trading chart with AI analysis panel — signal, entry, SL, TP and structure overlaid in real time.")
 render_metric_strip(bundle)
 
 # Render TradingView Live Chart Widget
 render_tradingview_widget(st.session_state.analysis_symbol, st.session_state.analysis_timeframe, bundle)
 
-overview_tab, mtf_tab, structure_tab, sessions_tab, news_tab, history_tab = st.tabs(
-    ["📊 Overview", "🔄 Multi-Timeframe", "🏗️ Structure Logic", "🌍 Sessions", "📰 News Intel", "📜 Trade History"]
+overview_tab, mtf_tab, structure_tab, sessions_tab, news_tab, history_tab, levels_tab = st.tabs(
+    ["📊 Overview", "🔄 Multi-Timeframe", "🏗️ Structure Logic", "🌍 Sessions", "📰 News Intel", "📜 Trade History", "📐 SMC Intel & Levels"]
 )
 
 with overview_tab:
     has_mismatch = any("Feed mismatch" in w or "mismatch" in w.lower() for w in bundle.signal.warnings)
     approved_trade = (bundle.signal.signal in ["BUY", "SELL", "STRONG_BUY", "STRONG_SELL"]
-                      and bundle.signal.stop_loss not in [None, 0, 0.0]
-                      and not has_mismatch)
+                      and bundle.signal.stop_loss not in [None, 0, 0.0])
     show_levels = approved_trade and bundle.signal.entry not in [None, 0, 0.0]
 
     # Status banner
@@ -2136,7 +2511,7 @@ with overview_tab:
             render_content_card("⚠️ Warnings", f"<ul class='content-list'>{warnings_html}</ul>")
 
         # Reasons block
-        if bundle.signal.reasons:
+        if approved_trade and bundle.signal.reasons:
             reasons_html = "".join(f"<li style='margin-bottom:4px;'>{r}</li>" for r in bundle.signal.reasons)
             render_content_card("📌 Signal Reasons", f"<ul class='content-list'>{reasons_html}</ul>")
 
@@ -2154,6 +2529,13 @@ with overview_tab:
         render_content_card("Trade Levels", f"<ul class='content-list'>{trade_levels_html}</ul>")
 
         # Signal summary
+        breakdown_html = ""
+        if getattr(bundle.signal, "confidence_breakdown", None):
+            breakdown_items = []
+            for name, val in bundle.signal.confidence_breakdown.items():
+                breakdown_items.append(f"<span style='font-size:10px;font-weight:700;color:#475569;'>{name}: {val:.1f}</span>")
+            breakdown_html = f"<div style='display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;border-top:1px solid rgba(148,163,184,0.15);padding-top:6px;'>{' | '.join(breakdown_items)}</div>"
+
         signal_color = {"BUY": "#16a34a", "STRONG_BUY": "#15803d", "SELL": "#dc2626", "STRONG_SELL": "#b91c1c"}.get(bundle.signal.signal, "#475569")
         summary_html = f"""
         <div style='display:grid;grid-template-columns:1fr 1fr;gap:10px;'>
@@ -2164,6 +2546,7 @@ with overview_tab:
           <div style='padding:12px;border-radius:14px;background:rgba(15,23,42,0.05);border:1px solid rgba(148,163,184,0.2);grid-column:span 2;'>
             <div style='font-size:11px;color:#64748b;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em;'>Confidence</div>
             {_conf_gauge_html(bundle.signal.confidence, height='12px', font_size='18px')}
+            {breakdown_html}
           </div>
           <div style='padding:12px;border-radius:14px;background:rgba(15,23,42,0.05);border:1px solid rgba(148,163,184,0.2);'>
             <div style='font-size:11px;color:#64748b;margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em;'>Symbol</div>
@@ -2637,6 +3020,12 @@ with news_tab:
                 _gate_text_color = "#166534" if _ns.entry_allowed else "#92400e"
                 _conf_bar_color = "#16a34a" if _ns.confidence >= 80 else ("#f59e0b" if _ns.confidence >= 60 else "#dc2626")
 
+                _surprise_display = f"{_ns.surprise_pct * 100:.1f}%" if getattr(_ns, "surprise_pct", None) is not None else "--"
+                _contrarian_display = getattr(_ns, "contrarian_bias", "--") or "--"
+                _strength_display = f"{_ns.currency_strength_score:.1f}" if getattr(_ns, "currency_strength_score", None) is not None else "--"
+                _fundamental_display = f"{_ns.fundamental_score:.1f}" if getattr(_ns, "fundamental_score", None) is not None else "--"
+                _risk_score_display = f"{_ns.risk_score:.1f}" if getattr(_ns, "risk_score", None) is not None else "--"
+
                 _signal_card_html = f"""
                 <div style="border-radius:20px;padding:1.1rem 1.2rem;background:rgba(255,255,255,0.96);border:1px solid rgba(148,163,184,0.28);box-shadow:0 12px 30px rgba(15,23,42,0.07);margin-bottom:1rem;">
                   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;flex-wrap:wrap;gap:8px;">
@@ -2684,6 +3073,33 @@ with news_tab:
                     <div style="padding:9px 10px;border-radius:14px;background:rgba(15,23,42,0.04);border:1px solid rgba(148,163,184,0.16);">
                       <div style="font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px;">Tech Confirm</div>
                       <div style="font-size:13px;font-weight:700;color:{'#16a34a' if _ns.technical_confirmation else '#dc2626'};">{'Yes' if _ns.technical_confirmation else 'No'}</div>
+                    </div>
+                  </div>
+
+                  <!-- Macro Intelligence details -->
+                  <div style="margin-top:0.5rem;margin-bottom:0.75rem;border-top:1px solid rgba(148,163,184,0.15);padding-top:0.5rem;">
+                    <div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px;">Forex Factory Macro Intel</div>
+                    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+                      <div style="padding:8px 9px;border-radius:12px;background:rgba(15,23,42,0.03);border:1px solid rgba(148,163,184,0.12);">
+                        <div style="font-size:9px;color:#64748b;text-transform:uppercase;margin-bottom:2px;">Surprise</div>
+                        <div style="font-size:12px;font-weight:700;color:#0f172a;">{_surprise_display}</div>
+                      </div>
+                      <div style="padding:8px 9px;border-radius:12px;background:rgba(15,23,42,0.03);border:1px solid rgba(148,163,184,0.12);">
+                        <div style="font-size:9px;color:#64748b;text-transform:uppercase;margin-bottom:2px;">Contrarian Bias</div>
+                        <div style="font-size:12px;font-weight:700;color:{'#16a34a' if _contrarian_display == 'BULLISH' else ('#dc2626' if _contrarian_display == 'BEARISH' else '#64748b')};">{_contrarian_display}</div>
+                      </div>
+                      <div style="padding:8px 9px;border-radius:12px;background:rgba(15,23,42,0.03);border:1px solid rgba(148,163,184,0.12);">
+                        <div style="font-size:9px;color:#64748b;text-transform:uppercase;margin-bottom:2px;">Currency Str</div>
+                        <div style="font-size:12px;font-weight:700;color:#0f172a;">{_strength_display}</div>
+                      </div>
+                      <div style="padding:8px 9px;border-radius:12px;background:rgba(15,23,42,0.03);border:1px solid rgba(148,163,184,0.12);">
+                        <div style="font-size:9px;color:#64748b;text-transform:uppercase;margin-bottom:2px;">Fundamental Sc</div>
+                        <div style="font-size:12px;font-weight:700;color:#0f172a;">{_fundamental_display}</div>
+                      </div>
+                      <div style="padding:8px 9px;border-radius:12px;background:rgba(15,23,42,0.03);border:1px solid rgba(148,163,184,0.12);">
+                        <div style="font-size:9px;color:#64748b;text-transform:uppercase;margin-bottom:2px;">Risk Score</div>
+                        <div style="font-size:12px;font-weight:700;color:#0f172a;">{_risk_score_display}</div>
+                      </div>
                     </div>
                   </div>
 
@@ -3003,3 +3419,141 @@ with history_tab:
                 "One row per unique trade. Active positions stay open until SL/TP is hit or the signal direction flips."
             )
             st.dataframe(styled, use_container_width=True, height=540)
+
+with levels_tab:
+    render_section_header(
+        "📐 Smart Money Concepts (SMC) & Levels",
+        "Deep structural intelligence — Support/Resistance zones, Fair Value Gaps (FVG), Order Blocks (OB), Liquidity Sweeps, and BOS/CHOCH structural breaks."
+    )
+
+    # Top stats grid: Trend, Phase, BOS, CHOCH
+    _trend_col = bundle.structure.trend.upper() if bundle.structure.trend else "N/A"
+    _phase_col = bundle.structure.phase.upper() if bundle.structure.phase else "N/A"
+    _bos_col = bundle.structure.bos.upper().replace("_", " ") if bundle.structure.bos else "NONE"
+    _choch_col = bundle.structure.choch.upper().replace("_", " ") if bundle.structure.choch else "NONE"
+    _liq_col = bundle.structure.liquidity_sweep.upper().replace("_", " ") if bundle.structure.liquidity_sweep else "NONE"
+
+    st.markdown(
+        f"""
+        <div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 20px; padding: 16px; background: rgba(255, 255, 255, 0.95); border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 20px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.04); backdrop-filter: blur(10px);'>
+            <div style='border-right: 1px solid rgba(148, 163, 184, 0.15); padding-right: 10px;'>
+                <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase;'>SMC Trend</div>
+                <div style='font-size: 16px; font-weight: 800; color: {"#16a34a" if "BULLISH" in _trend_col else ("#dc2626" if "BEARISH" in _trend_col else "#64748b")}; margin-top: 4px;'>{_trend_col}</div>
+            </div>
+            <div style='border-right: 1px solid rgba(148, 163, 184, 0.15); padding-right: 10px;'>
+                <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase;'>Market Phase</div>
+                <div style='font-size: 16px; font-weight: 800; color: #0f172a; margin-top: 4px;'>{_phase_col}</div>
+            </div>
+            <div style='border-right: 1px solid rgba(148, 163, 184, 0.15); padding-right: 10px;'>
+                <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase;'>BOS State</div>
+                <div style='font-size: 15px; font-weight: 800; color: {"#16a34a" if "BULLISH" in _bos_col else ("#dc2626" if "BEARISH" in _bos_col else "#475569")}; margin-top: 4px;'>{_bos_col}</div>
+            </div>
+            <div style='border-right: 1px solid rgba(148, 163, 184, 0.15); padding-right: 10px;'>
+                <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase;'>CHOCH State</div>
+                <div style='font-size: 15px; font-weight: 800; color: {"#16a34a" if "BULLISH" in _choch_col else ("#dc2626" if "BEARISH" in _choch_col else "#475569")}; margin-top: 4px;'>{_choch_col}</div>
+            </div>
+            <div>
+                <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase;'>Liquidity Sweep</div>
+                <div style='font-size: 14px; font-weight: 800; color: {"#16a34a" if "BUY" in _liq_col else ("#dc2626" if "SELL" in _liq_col else "#475569")}; margin-top: 4px;'>{_liq_col}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    _levels_left, _levels_right = st.columns([1.1, 1], gap="large")
+
+    with _levels_left:
+        # Support & Resistance Zones
+        render_content_card(
+            "🧱 Supply & Demand Order Zones (S/R)",
+            "Key institutional horizontal support and resistance zones. Touches indicate level strength."
+        )
+        if bundle.zones:
+            _zone_rows = []
+            for z in bundle.zones:
+                _zone_rows.append({
+                    "Type": "Resistance 🔴" if z.type == "resistance" else "Support 🟢",
+                    "Top Bound": f"{z.top:.5f}",
+                    "Bottom Bound": f"{z.bottom:.5f}",
+                    "Strength": f"{z.strength:.1f}",
+                    "Touches": z.touches,
+                    "HTF Aligned": "Yes ✅" if z.htf_aligned else "No",
+                    "Vol Validated": "Yes ✅" if z.volume_validated else "No"
+                })
+            st.dataframe(pd.DataFrame(_zone_rows), use_container_width=True, height=220)
+        else:
+            st.info("No S/R zones detected in this lookback region.")
+
+        # Order Blocks (OB)
+        render_content_card(
+            "📦 SMC Order Blocks (OB)",
+            "Areas where institutional market makers place heavy block orders before a breakout."
+        )
+        _ob_list = bundle.structure.order_blocks or []
+        if _ob_list:
+            _ob_rows = []
+            for ob in _ob_list:
+                _ob_rows.append({
+                    "Type": "Bullish OB 🟢" if ob.get("type") == "bullish_ob" else "Bearish OB 🔴",
+                    "High Price": f"{float(ob.get('high', 0.0)):.5f}",
+                    "Low Price": f"{float(ob.get('low', 0.0)):.5f}",
+                    "Mitigation Index": ob.get("index", "unmitigated")
+                })
+            st.dataframe(pd.DataFrame(_ob_rows), use_container_width=True, height=200)
+        else:
+            st.info("No active Order Blocks detected in the current range.")
+
+    with _levels_right:
+        # Fair Value Gaps (FVG)
+        render_content_card(
+            "⚡ Fair Value Gaps (FVG) / Imbalances",
+            "Inefficient candle spreads left by rapid market expansion. Often retested or filled."
+        )
+        _fvg_list = bundle.structure.imbalances or []
+        if _fvg_list:
+            _fvg_rows = []
+            for fvg in _fvg_list:
+                _fvg_rows.append({
+                    "Type": "Bullish FVG 🟢" if fvg.get("type") == "bullish" else "Bearish FVG 🔴",
+                    "Gap Low": f"{float(fvg.get('low', 0.0)):.5f}",
+                    "Gap High": f"{float(fvg.get('high', 0.0)):.5f}",
+                    "Gap Midpoint": f"{float(fvg.get('avg', 0.0)):.5f}",
+                })
+            st.dataframe(pd.DataFrame(_fvg_rows), use_container_width=True, height=220)
+        else:
+            st.info("No Fair Value Gaps (FVG) detected in this price leg.")
+
+        # Swing Highs & Lows (Swing Structure)
+        render_content_card(
+            "📐 Swing Points History",
+            "Recent key swing points (HH/HL/LH/LL) mapping the market structure profile."
+        )
+        _swings = bundle.structure.swing_points or {}
+        _swing_rows = []
+        for grp, pts in _swings.items():
+            for p in pts:
+                _swing_rows.append({
+                    "Point Type": p.get("label", "").upper(),
+                    "Price Level": f"{float(p.get('price', 0.0)):.5f}",
+                    "Bar Timestamp": p.get("timestamp", "").replace("T", " ")[:16]
+                })
+        if _swing_rows:
+            _swing_rows = sorted(_swing_rows, key=lambda s: s["Bar Timestamp"], reverse=True)
+            st.dataframe(pd.DataFrame(_swing_rows[:20]), use_container_width=True, height=200)
+        else:
+            st.info("No swing points logged in this window.")
+
+# ── Live Mode Auto-Refresh Loop ──
+if st.session_state.get("live_mode", False):
+    sess_id = st.session_state.get("session_uuid")
+    visibility_state = _tab_visibility.get(sess_id, "visible")
+    
+    if visibility_state == "hidden":
+        sleep_duration = 15.0
+    else:
+        sleep_duration = 2.0
+        
+    import time
+    time.sleep(sleep_duration)
+    st.rerun()

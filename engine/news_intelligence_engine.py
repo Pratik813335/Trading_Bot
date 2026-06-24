@@ -384,6 +384,17 @@ class NewsIntelligenceEngine:
             if not getattr(event, field, None):
                 missing_top.append(field)
 
+        # Calculate surprise metrics
+        surprise = 0.0
+        surprise_pct = 0.0
+        if event.actual is not None and event.forecast is not None:
+            surprise = event.actual - event.forecast
+            denom = abs(event.previous) if (event.previous is not None and event.previous != 0.0) else 1.0
+            surprise_pct = (event.actual - event.forecast) / denom
+            
+        event.surprise = surprise
+        event.surprise_pct = surprise_pct
+
         # ── Step 2: Fundamental interpretation ────────────────────────────
         interpreter = _CATEGORY_INTERPRETERS.get(event.category)
         if interpreter and not missing_top:
@@ -425,6 +436,53 @@ class NewsIntelligenceEngine:
         # Assemble all warnings
         all_warnings = gate_warnings + score_notes
 
+        # ── Speculative Sentiment Index (SSI) crowd positioning ──
+        rsi_val = indicators.get("rsi14") or indicators.get("rsi") or 50.0
+        crowd_long_pct = 80.0 - (rsi_val - 30.0) * (60.0 / 40.0)
+        crowd_long_pct = max(10.0, min(90.0, crowd_long_pct))
+        
+        if crowd_long_pct >= 75.0:
+            contrarian_bias = "BEARISH"
+        elif crowd_long_pct <= 25.0:
+            contrarian_bias = "BULLISH"
+        else:
+            contrarian_bias = "NEUTRAL"
+
+        # ── Currency Strength Score ──
+        price = indicators.get("price") or indicators.get("close")
+        ema50 = indicators.get("ema50")
+        ema200 = indicators.get("ema200")
+        
+        cs_score = 50.0
+        if price is not None and ema50 is not None and ema200 is not None:
+            if price > ema50 and ema50 > ema200:
+                cs_score = 70.0 + (rsi_val - 50.0) * 0.5
+            elif price < ema50 and ema50 < ema200:
+                cs_score = 30.0 + (rsi_val - 50.0) * 0.5
+            else:
+                cs_score = 50.0 + (rsi_val - 50.0) * 0.5
+        cs_score = max(0.0, min(100.0, cs_score))
+
+        # ── Fundamental and Risk Scores ──
+        fundamental_score = 50.0
+        fundamental_score += surprise_pct * 150.0
+        if sentiment == "BULLISH":
+            fundamental_score += 15.0
+        elif sentiment == "BEARISH":
+            fundamental_score -= 15.0
+        fundamental_score = max(0.0, min(100.0, fundamental_score))
+
+        risk_score = 30.0
+        if event.impact_level == "HIGH":
+            risk_score += 40.0
+        elif event.impact_level == "MEDIUM":
+            risk_score += 20.0
+        if abs(surprise) > 0.0:
+            risk_score += 15.0
+        if not technical_confirmation:
+            risk_score += 15.0
+        risk_score = max(0.0, min(100.0, risk_score))
+
         # ── Step 6: Build output ──────────────────────────────────────────
         return NewsSignal(
             event_name=event.event_name,
@@ -441,6 +499,12 @@ class NewsIntelligenceEngine:
             warnings=all_warnings,
             technical_confirmation=technical_confirmation,
             logged_at=datetime.now(timezone.utc).isoformat(),
+            surprise=surprise,
+            surprise_pct=surprise_pct,
+            currency_strength_score=cs_score,
+            contrarian_bias=contrarian_bias,
+            fundamental_score=fundamental_score,
+            risk_score=risk_score,
         )
 
     def analyze_event_for_all_pairs(
@@ -478,4 +542,10 @@ class NewsIntelligenceEngine:
             "reason": signal.reason or None,
             "warnings": signal.warnings,
             "technical_confirmation": signal.technical_confirmation,
+            "surprise": getattr(signal, "surprise", None),
+            "surprise_pct": getattr(signal, "surprise_pct", None),
+            "currency_strength_score": getattr(signal, "currency_strength_score", None),
+            "contrarian_bias": getattr(signal, "contrarian_bias", None),
+            "fundamental_score": getattr(signal, "fundamental_score", None),
+            "risk_score": getattr(signal, "risk_score", None),
         }

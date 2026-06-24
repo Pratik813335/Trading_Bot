@@ -119,24 +119,39 @@ def build_trade_plan(signal, price, atr_value, zones, fib, nearest_zone, swings=
             if highs:
                 lh_price = highs[-1]["price"]
 
+    # Load dynamic optimizer offsets
+    import json
+    from pathlib import Path
+    opt_file = Path("storage/optimizer_state.json")
+    sl_atr_offset = 0.0
+    if opt_file.exists():
+        try:
+            opt_data = json.loads(opt_file.read_text(encoding="utf-8"))
+            sl_atr_offset = float(opt_data.get("sl_atr_offset", 0.0))
+        except Exception:
+            pass
+
+    sl_mult = 1.5 + sl_atr_offset
+    swing_sl_mult = 0.3 + sl_atr_offset * 0.2
+
     if signal == "BUY":
         support = nearest_zone(zones, "support", price, below=True)
         resistance = nearest_zone(zones, "resistance", price, below=False)
         if hl_price is not None:
-            stop_loss = min(hl_price - atr_value * 0.3, price - atr_value * 1.5)
+            stop_loss = min(hl_price - atr_value * swing_sl_mult, price - atr_value * sl_mult)
         else:
-            structural_sl = support["low"] if support else price - atr_value * 1.5
-            stop_loss = min(structural_sl, price - atr_value * 1.5)
+            structural_sl = support["low"] if support else price - atr_value * sl_mult
+            stop_loss = min(structural_sl, price - atr_value * sl_mult)
         take_profit = resistance["mid"] if resistance else fib.get("ext_1.272", price + atr_value * 3)
         take_profit = max(take_profit, price + abs(price - stop_loss) * MIN_RISK_REWARD)
     elif signal == "SELL":
         resistance = nearest_zone(zones, "resistance", price, below=False)
         support = nearest_zone(zones, "support", price, below=True)
         if lh_price is not None:
-            stop_loss = max(lh_price + atr_value * 0.3, price + atr_value * 1.5)
+            stop_loss = max(lh_price + atr_value * swing_sl_mult, price + atr_value * sl_mult)
         else:
-            structural_sl = resistance["high"] if resistance else price + atr_value * 1.5
-            stop_loss = max(structural_sl, price + atr_value * 1.5)
+            structural_sl = resistance["high"] if resistance else price + atr_value * sl_mult
+            stop_loss = max(structural_sl, price + atr_value * sl_mult)
         take_profit = support["mid"] if support else fib.get("ext_1.272", price - atr_value * 3)
         take_profit = min(take_profit, price - abs(stop_loss - price) * MIN_RISK_REWARD)
     else:

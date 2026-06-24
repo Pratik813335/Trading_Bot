@@ -1,3 +1,4 @@
+import pandas as pd
 from core.indicators import add_indicators
 from core.market_structure import (
     detect_bos,
@@ -36,7 +37,11 @@ def candle_pattern(df):
     lower_wick = min(current['open'], current['close']) - current['low']
     upper_wick = current['high'] - max(current['open'], current['close'])
     avg_body = df['close'].sub(df['open']).abs().tail(14).mean()
-    is_doji = body < avg_body * 0.15 and body < candle_range * 0.2
+    atr_val = float(df["atr14"].iloc[-1]) if ("atr14" in df.columns and not pd.isna(df["atr14"].iloc[-1])) else float((df["high"] - df["low"]).tail(14).mean())
+    if pd.isna(atr_val) or atr_val <= 0:
+        atr_val = 0.0001
+    
+    is_doji = body < avg_body * 0.12 and body < candle_range * 0.18 and candle_range > atr_val * 0.4
 
     # Check 3-candle continuation patterns first
     if len(df) >= 3:

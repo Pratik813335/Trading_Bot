@@ -434,8 +434,9 @@ class SessionStrategyEngine:
         curr_volume = float(candles["volume"].iloc[-1]) if "volume" in candles.columns else 0.0
         volume_avg = indicators.get("volume_avg") or 1.0
 
-        zone_sups = sorted([z for z in zones if z.type == "support"], key=lambda z: z.strength, reverse=True)
-        zone_res = sorted([z for z in zones if z.type == "resistance"], key=lambda z: z.strength, reverse=True)
+        # Sort by proximity to current price to get closest boundaries
+        zone_sups = sorted([z for z in zones if z.type == "support"], key=lambda z: abs(price - z.bottom))
+        zone_res = sorted([z for z in zones if z.type == "resistance"], key=lambda z: abs(price - z.top))
 
         closest_support = zone_sups[0].bottom if zone_sups else None
         closest_resistance = zone_res[0].top if zone_res else None
@@ -443,8 +444,9 @@ class SessionStrategyEngine:
         if closest_support is None or closest_resistance is None:
             return self._default_wait(session, symbol, candles, pip_size, None, None, ["Missing valid S/R boundaries for Breakout"])
 
-        broke_above = price > closest_resistance
-        broke_below = price < closest_support
+        # Check if price has broken out and is still within entry distance (1.8 * ATR) to avoid late chases
+        broke_above = price > closest_resistance and (price - closest_resistance) <= atr_price * 1.8
+        broke_below = price < closest_support and (closest_support - price) <= atr_price * 1.8
 
         direction = "WAIT"
         if broke_above:

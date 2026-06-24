@@ -172,8 +172,8 @@ class AnalysisOrchestrator:
             "chart_sync": sync_status.match_percentage,
         }
 
-    def analyze(self, symbol, timeframe, forced_strategy=None):
-        market_frame = self.market_feed.fetch(symbol, timeframe)
+    def analyze(self, symbol, timeframe, forced_strategy=None, force_refresh=False):
+        market_frame = self.market_feed.fetch(symbol, timeframe, force_refresh=force_refresh)
         if market_frame is None:
             return None
 
@@ -194,6 +194,33 @@ class AnalysisOrchestrator:
             zones=zones,
         )
 
+        # --- Session analysis & synchronization ---
+        try:
+            session_state = self.session_engine.detect()
+            forced = forced_strategy or getattr(self, "forced_strategy", None)
+            session_signal = self.session_strategy_engine.analyze(
+                session=session_state,
+                symbol=symbol,
+                candles=candles,
+                indicators=indicator_snapshot,
+                zones=zones,
+                structure=structure_state,
+                forced_strategy=forced,
+            )
+        except Exception:
+            session_signal = None
+
+        if session_signal is not None and session_signal.trade_action in ["BUY", "SELL"] and session_signal.is_actionable:
+            signal.signal = session_signal.trade_action
+            signal.confidence = float(session_signal.confidence)
+            signal.entry = session_signal.entry_price
+            signal.stop_loss = session_signal.stop_loss
+            signal.tp1 = session_signal.take_profit_1
+            signal.tp2 = session_signal.take_profit_2
+            signal.rr_ratio = session_signal.rr_ratio
+            signal.reasons = list(set(list(signal.reasons or []) + [session_signal.reasoning] + (session_signal.confluences or [])))
+            signal.warnings = list(set(list(signal.warnings or []) + (session_signal.warnings or [])))
+
         # --- Active Trade Invalidation Check ---
         active = self.signal_repository.get_active_position(symbol)
         invalidation_reason = None
@@ -210,9 +237,11 @@ class AnalysisOrchestrator:
             current_open = float(last_candle["open"])
             atr = float(last_candle["atr14"]) if "atr14" in last_candle else 0.0001
             
-            # 1. Confirmation Failure
-            if signal.signal in ["NEUTRAL", "HOLD", "NO_TRADE"]:
-                invalidation_reason = f"Confirmation Failure: Primary signal is now {signal.signal}"
+            # 1. Confirmation Failure (Opposite Signal Direction)
+            if active_dir == "BUY" and signal.signal in ["SELL", "STRONG_SELL"]:
+                invalidation_reason = "Confirmation Failure: Signal reversed to SELL"
+            elif active_dir == "SELL" and signal.signal in ["BUY", "STRONG_BUY"]:
+                invalidation_reason = "Confirmation Failure: Signal reversed to BUY"
             
             # 2. Opposite Market Structure
             if invalidation_reason is None:
@@ -297,6 +326,7 @@ class AnalysisOrchestrator:
             
             # Close the position in the repository
             self.signal_repository.close_position(active["logged_at"], "TRADE_REMOVED")
+            self.auto_tune_parameters(symbol)
 
         # --- Multi-Timeframe Analysis ---
         target_timeframes = ["1", "5", "15", "60", "240", "D"]
@@ -460,6 +490,74 @@ class AnalysisOrchestrator:
             except Exception:
                 pass
 
+        # ── Master Score Calculation ──
+        T = float(signal.confidence)
+        
+        # Fundamental Score (F)
+        f_scores = [ns.fundamental_score for ns in news_signals if getattr(ns, "fundamental_score", None) is not None]
+        F = sum(f_scores) / len(f_scores) if f_scores else 50.0
+        
+        # Crowd Sentiment Score (S)
+        s_scores = []
+        for ns in news_signals:
+            cb = getattr(ns, "contrarian_bias", None)
+            if cb == "BULLISH":
+                s_scores.append(80.0)
+            elif cb == "BEARISH":
+                s_scores.append(20.0)
+            elif cb == "NEUTRAL":
+                s_scores.append(50.0)
+        if not s_scores:
+            # Fallback based on RSI
+            rsi_val = (indicator_snapshot.get("rsi14") or indicator_snapshot.get("rsi") or 50.0)
+            crowd_long_pct = 80.0 - (rsi_val - 30.0) * (60.0 / 40.0)
+            if crowd_long_pct >= 75.0:
+                s_scores.append(20.0)
+            elif crowd_long_pct <= 25.0:
+                s_scores.append(80.0)
+            else:
+                s_scores.append(50.0)
+        S = sum(s_scores) / len(s_scores) if s_scores else 50.0
+        
+        # Currency Strength (CS)
+        cs_scores = [ns.currency_strength_score for ns in news_signals if getattr(ns, "currency_strength_score", None) is not None]
+        if not cs_scores:
+            # Fallback based on trend alignment
+            price = indicator_snapshot.get("price") or indicator_snapshot.get("close")
+            ema50 = indicator_snapshot.get("ema50")
+            ema200 = indicator_snapshot.get("ema200")
+            rsi_val = (indicator_snapshot.get("rsi14") or indicator_snapshot.get("rsi") or 50.0)
+            cs_val = 50.0
+            if price is not None and ema50 is not None and ema200 is not None:
+                if price > ema50 and ema50 > ema200:
+                    cs_val = 70.0 + (rsi_val - 50.0) * 0.5
+                elif price < ema50 and ema50 < ema200:
+                    cs_val = 30.0 + (rsi_val - 50.0) * 0.5
+                else:
+                    cs_val = 50.0 + (rsi_val - 50.0) * 0.5
+            cs_scores.append(max(0.0, min(100.0, cs_val)))
+        CS = sum(cs_scores) / len(cs_scores) if cs_scores else 50.0
+        
+        # Regime weights
+        has_major_news = any(ns.impact == "HIGH" for ns in news_signals)
+        is_trending = structure_state.trend in ["bullish", "bearish"] and (indicator_snapshot.get("adx14") or 0.0) >= 20
+        
+        if has_major_news:
+            w_T, w_F, w_S, w_CS = 0.10, 0.70, 0.10, 0.10
+        elif is_trending:
+            w_T, w_F, w_S, w_CS = 0.40, 0.10, 0.10, 0.40
+        else:
+            w_T, w_F, w_S, w_CS = 0.50, 0.10, 0.30, 0.10
+            
+        master_score = w_T * T + w_F * F + w_S * S + w_CS * CS
+        signal.confidence = round(master_score, 2)
+        signal.confidence_breakdown = {
+            "Technical Score (T)": round(T, 1),
+            "Fundamental Score (F)": round(F, 1),
+            "Sentiment Score (S)": round(S, 1),
+            "Currency Strength (CS)": round(CS, 1),
+        }
+
         provisional_ai = self.ai_service.explain(signal)
         provisional_trade_payload = self._build_trade_payload(signal, provisional_ai, zones)
         ai_explanation = self.ai_service.explain(
@@ -484,8 +582,18 @@ class AnalysisOrchestrator:
             zones=zones,
             news_signals=news_signals,
             ai_explanation=ai_explanation,
-            forced_strategy=forced_strategy
+            forced_strategy=forced_strategy,
+            session_signal=session_signal
         )
+
+        # Freeze signal parameters to match active position for absolute consistency
+        if active is not None and invalidation_reason is None:
+            signal.signal = active.get("signal")
+            signal.entry = float(active.get("entry") or signal.entry)
+            signal.stop_loss = float(active.get("stop_loss") or signal.stop_loss)
+            signal.tp1 = float(active.get("tp1") or signal.tp1)
+            signal.tp2 = float(active.get("tp2") or signal.tp2)
+            signal.rr_ratio = float(active.get("rr_ratio") or signal.rr_ratio)
 
         signal, ai_explanation, trade_payload = self._enforce_trade_contract(signal, ai_explanation, zones)
         chart_payload = self.renderer.build_chart_payload(symbol, timeframe, candles, zones, structure_state, signal, market_frame.metadata)
@@ -496,21 +604,6 @@ class AnalysisOrchestrator:
             sync_status=sync_status,
             signal=signal,
         )
-        # ── Session analysis ─────────────────────────────────────────
-        try:
-            session_state = self.session_engine.detect()
-            forced = forced_strategy or getattr(self, "forced_strategy", None)
-            session_signal = self.session_strategy_engine.analyze(
-                session=session_state,
-                symbol=symbol,
-                candles=candles,
-                indicators=indicator_snapshot,
-                zones=zones,
-                structure=structure_state,
-                forced_strategy=forced,
-            )
-        except Exception:
-            session_signal = None
 
         return AnalysisBundle(
             candles=candles,
@@ -529,7 +622,7 @@ class AnalysisOrchestrator:
             mtf_analysis=mtf_analysis,
         )
 
-    def validate_10_gates(self, signal, sync_status, structure_state, indicators, zones, news_signals, ai_explanation, forced_strategy=None):
+    def validate_10_gates(self, signal, sync_status, structure_state, indicators, zones, news_signals, ai_explanation, forced_strategy=None, session_signal=None):
         gate_failures = []
         gate_warnings = []
         
@@ -547,9 +640,13 @@ class AnalysisOrchestrator:
         if data_age_minutes > 3 * tf_minutes:
             gate_failures.append(f"G1 Fail: Stale Data ({data_age_minutes:.1f}m old, max {3 * tf_minutes}m)")
 
-        # G2: Market Structure (Skip structure check if we are explicitly running Range Trader strategy)
+        # G2: Market Structure (Skip structure check if we are explicitly running Range Trader, Scalping, or Breakout strategies)
         if signal.signal in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
-            if forced_strategy != "Range Trader":
+            is_ranging_or_breakout_strategy = (
+                forced_strategy in ["Range Trader", "Quick Scalper", "Breakout Trader"] or
+                (session_signal is not None and getattr(session_signal, "strategy_used", None) in ["Range Trading", "Scalping", "Breakout Trading"])
+            )
+            if not is_ranging_or_breakout_strategy:
                 if structure_state.trend in ["range", "ranging", "mixed"]:
                     gate_failures.append("G2 Fail: Ranging Market structure trend")
 
@@ -560,7 +657,10 @@ class AnalysisOrchestrator:
 
         # G4: Min Confluences
         if signal.signal in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
-            active_conf = sum(1 for v in signal.confidence_breakdown.values() if v > 0)
+            if session_signal is not None and getattr(session_signal, "is_actionable", False):
+                active_conf = len(getattr(session_signal, "confluences", []))
+            else:
+                active_conf = sum(1 for v in signal.confidence_breakdown.values() if v > 0)
             from config import MIN_CONFIRMATIONS
             if active_conf < MIN_CONFIRMATIONS:
                 gate_failures.append(f"G4 Fail: Insufficient Confluence ({active_conf} < {MIN_CONFIRMATIONS})")
@@ -582,9 +682,22 @@ class AnalysisOrchestrator:
             if signal.rr_ratio < MIN_RISK_REWARD:
                 gate_failures.append(f"G7 Fail: Risk:Reward too low ({signal.rr_ratio:.2f} < {MIN_RISK_REWARD})")
 
-        # G8: News Filter
+        # G8: News Filter & Technical-Fundamental Conflict Check
+        fundamental_bias = "NEUTRAL"
+        bullish_count = sum(1 for ns in news_signals if getattr(ns, "sentiment", None) == "BULLISH" and getattr(ns, "impact", None) in ["HIGH", "MEDIUM"])
+        bearish_count = sum(1 for ns in news_signals if getattr(ns, "sentiment", None) == "BEARISH" and getattr(ns, "impact", None) in ["HIGH", "MEDIUM"])
+        if bullish_count > bearish_count:
+            fundamental_bias = "BULLISH"
+        elif bearish_count > bullish_count:
+            fundamental_bias = "BEARISH"
+
+        if signal.signal in ["BUY", "STRONG_BUY"] and fundamental_bias == "BEARISH":
+            gate_failures.append("G8 Fail: Technical-Fundamental Conflict (Tech Buy vs Bearish News Sentiment)")
+        elif signal.signal in ["SELL", "STRONG_SELL"] and fundamental_bias == "BULLISH":
+            gate_failures.append("G8 Fail: Technical-Fundamental Conflict (Tech Sell vs Bullish News Sentiment)")
+
         for ns in news_signals:
-            if ns.impact == "HIGH" and not ns.entry_allowed:
+            if getattr(ns, "impact", None) == "HIGH" and not getattr(ns, "entry_allowed", True):
                 gate_failures.append(f"G8 Fail: High-impact news event '{ns.event_name}' in block window")
 
         # G9: AI Validation
@@ -775,9 +888,11 @@ class AnalysisOrchestrator:
                 if sl_hit:
                     self.signal_repository.close_position(logged_at, "SL_HIT")
                     active = None  # position is now closed
+                    self.auto_tune_parameters(symbol)
                 elif tp_hit:
                     self.signal_repository.close_position(logged_at, "TP_HIT")
                     active = None  # position is now closed
+                    self.auto_tune_parameters(symbol)
 
         # ── Step B: Evaluate the new signal against the (still open) position ──
         if active is not None:
@@ -790,6 +905,7 @@ class AnalysisOrchestrator:
 
             # Rule 4: direction changed before SL/TP → close old, open new
             self.signal_repository.close_position(logged_at, "CLOSED_BY_SIGNAL_CHANGE")
+            self.auto_tune_parameters(symbol)
 
         # ── Step C: Open the new position ────────────────────────────────
         payload = {
@@ -810,4 +926,63 @@ class AnalysisOrchestrator:
             "trade_payload":     bundle.trade_payload,
         }
         self.signal_repository.append(payload)
+
+    def auto_tune_parameters(self, symbol: str):
+        """
+        Self-refining optimization layer. Analyzes the last N trades for this symbol.
+        If the win rate is low (high SL hit rate), it adjusts entry thresholds and stops
+        in storage/optimizer_state.json to automatically improve signal accuracy over time.
+        """
+        import json
+        from pathlib import Path
+        from datetime import datetime, timezone
+        
+        opt_file = Path("storage/optimizer_state.json")
+        opt_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Load current state
+        state = {}
+        if opt_file.exists():
+            try:
+                state = json.loads(opt_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+                
+        # Read recent history
+        recent_trades = self.signal_repository.read_recent(limit=30)
+        symbol_trades = [t for t in recent_trades if str(t.get("symbol", "")).upper() == symbol.upper()]
+        
+        # Filter trades with final outcomes (TP_HIT or SL_HIT)
+        final_trades = [t for t in symbol_trades if t.get("outcome") in ["TP_HIT", "SL_HIT"]]
+        
+        if len(final_trades) >= 3:
+            wins = sum(1 for t in final_trades if t.get("outcome") == "TP_HIT")
+            losses = sum(1 for t in final_trades if t.get("outcome") == "SL_HIT")
+            win_rate = wins / len(final_trades)
+            
+            # Fetch current offsets
+            min_score_offset = float(state.get("min_score_offset", 0.0))
+            min_confluences_offset = int(state.get("min_confluences_offset", 0))
+            sl_atr_offset = float(state.get("sl_atr_offset", 0.0))
+            
+            # Auto-tuning adjustments
+            if win_rate < 0.45:
+                # Capital Protection: tighten criteria, expand SL
+                min_score_offset = min(15.0, min_score_offset + 2.0)
+                min_confluences_offset = min(3, min_confluences_offset + 1)
+                sl_atr_offset = min(1.0, sl_atr_offset + 0.15)
+            elif win_rate > 0.65:
+                # High Accuracy: slightly relax criteria, tighten SL
+                min_score_offset = max(-5.0, min_score_offset - 1.0)
+                min_confluences_offset = max(0, min_confluences_offset - 1)
+                sl_atr_offset = max(-0.3, sl_atr_offset - 0.05)
+                
+            # Update state
+            state["min_score_offset"] = min_score_offset
+            state["min_confluences_offset"] = min_confluences_offset
+            state["sl_atr_offset"] = sl_atr_offset
+            state["last_tuned_at"] = datetime.now(timezone.utc).isoformat()
+            state["win_rate_sample"] = f"{wins}/{len(final_trades)} ({win_rate*100:.1f}%)"
+            
+            opt_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
 

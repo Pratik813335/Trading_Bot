@@ -20,6 +20,12 @@ from tests.test_signal_pipeline import (
     test_feed_quality_rejects_large_gap_count,
     test_feed_quality_rejects_high_latency
 )
+from tests.test_news_intelligence import (
+    test_economic_surprise_and_interpretation,
+    test_contrarian_bias_from_rsi,
+    test_technical_fundamental_conflict_gate
+)
+from tests.test_optimizer import test_auto_tune_parameters
 
 if __name__ == "__main__":
     print("Executing Trading Bot Unit Tests...")
@@ -102,6 +108,37 @@ if __name__ == "__main__":
         print("  [PASS] test_feed_quality_rejects_high_latency")
     except Exception as e:
         print(f"  [FAIL] test_feed_quality_rejects_high_latency: {e}")
+        passed = False
+
+    # Forex Factory Macro News Intelligence Tests
+    print("\nExecuting Forex Factory Macro News Intelligence Tests...")
+    try:
+        test_economic_surprise_and_interpretation()
+        print("  [PASS] test_economic_surprise_and_interpretation")
+    except Exception as e:
+        print(f"  [FAIL] test_economic_surprise_and_interpretation: {e}")
+        passed = False
+
+    try:
+        test_contrarian_bias_from_rsi()
+        print("  [PASS] test_contrarian_bias_from_rsi")
+    except Exception as e:
+        print(f"  [FAIL] test_contrarian_bias_from_rsi: {e}")
+        passed = False
+
+    try:
+        test_technical_fundamental_conflict_gate()
+        print("  [PASS] test_technical_fundamental_conflict_gate")
+    except Exception as e:
+        print(f"  [FAIL] test_technical_fundamental_conflict_gate: {e}")
+        passed = False
+
+    print("\nExecuting Strategy Optimizer Tests...")
+    try:
+        test_auto_tune_parameters()
+        print("  [PASS] test_auto_tune_parameters")
+    except Exception as e:
+        print(f"  [FAIL] test_auto_tune_parameters: {e}")
         passed = False
         
     if passed:

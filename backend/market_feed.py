@@ -534,12 +534,13 @@ class UnifiedMarketFeed:
         self.providers = providers
         self.cache = cache
 
-    def fetch(self, symbol: str, timeframe: str) -> MarketFrame | None:
+    def fetch(self, symbol: str, timeframe: str, force_refresh: bool = False) -> MarketFrame | None:
         cache_key = (symbol, timeframe)
-        cached = self.cache.get(cache_key)
-        if cached is not None:
-            cached.metadata.cache_status = "cached"
-            return cached
+        if not force_refresh:
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                cached.metadata.cache_status = "cached"
+                return cached
 
         for provider in self.providers:
             if symbol not in provider.get_symbols():
@@ -550,6 +551,7 @@ class UnifiedMarketFeed:
                 frame = None
             if frame is not None:
                 frame.metadata.cache_status = "fresh"
-                self.cache.set(cache_key, frame)
+                if not force_refresh:
+                    self.cache.set(cache_key, frame)
                 return frame
         return None

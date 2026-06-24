@@ -243,14 +243,31 @@ class SignalEngineV2:
         active_confirmations = bull_confirmations if bullish > bearish else bear_confirmations
         gap = abs(bullish - bearish)
 
+        # Load dynamic optimizer offsets
+        import json
+        from pathlib import Path
+        opt_file = Path("storage/optimizer_state.json")
+        min_score_offset = 0.0
+        min_confluences_offset = 0
+        if opt_file.exists():
+            try:
+                opt_data = json.loads(opt_file.read_text(encoding="utf-8"))
+                min_score_offset = float(opt_data.get("min_score_offset", 0.0))
+                min_confluences_offset = int(opt_data.get("min_confluences_offset", 0))
+            except Exception:
+                pass
+
+        adjusted_min_score = MIN_SCORE + min_score_offset
+        adjusted_min_confirmations = MIN_CONFIRMATIONS + min_confluences_offset
+
         if signal in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
-            if (active_confirmations < MIN_CONFIRMATIONS or
-                weighted_confidence < MIN_SCORE or
+            if (active_confirmations < adjusted_min_confirmations or
+                weighted_confidence < adjusted_min_score or
                 gap < MIN_SIGNAL_GAP):
                 signal = "NO_TRADE"
                 warnings.append(
-                    f"Insufficient confluence: {active_confirmations} factors (min {MIN_CONFIRMATIONS}), "
-                    f"score {weighted_confidence} (min {MIN_SCORE}), "
+                    f"Insufficient confluence (tuned): {active_confirmations} factors (min {adjusted_min_confirmations}), "
+                    f"score {weighted_confidence} (min {adjusted_min_score}), "
                     f"gap {gap:.0f} (min {MIN_SIGNAL_GAP})"
                 )
 

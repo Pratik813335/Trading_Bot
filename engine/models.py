@@ -119,6 +119,8 @@ class EconomicEvent:
     affected_pairs: list[str] = field(default_factory=list)
     source: str = "ForexFactory"
     raw: dict[str, Any] = field(default_factory=dict)
+    surprise: float | None = None
+    surprise_pct: float | None = None
 
 
 @dataclass
@@ -137,3 +139,9 @@ class NewsSignal:
     warnings: list[str] = field(default_factory=list)
     technical_confirmation: bool = False
     logged_at: str = ""
+    surprise: float | None = None
+    surprise_pct: float | None = None
+    currency_strength_score: float | None = None
+    contrarian_bias: str | None = None
+    fundamental_score: float | None = None
+    risk_score: float | None = None
