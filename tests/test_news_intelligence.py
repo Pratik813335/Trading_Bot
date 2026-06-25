@@ -153,3 +153,165 @@ def test_technical_fundamental_conflict_gate():
 
     assert signal.signal == "NO_TRADE"
     assert any("Technical-Fundamental Conflict" in r for r in signal.reasons)
+
+
+def test_confluence_gate_bypass():
+    orchestrator = AnalysisOrchestrator(
+        market_feed=None,
+        indicator_engine=None,
+        structure_engine=None,
+        zone_engine=None,
+        signal_engine=None,
+        renderer=None,
+        signal_repository=None,
+        forex_factory_feed=DummyFeed(),
+        news_engine=NewsIntelligenceEngine(),
+        news_signal_repository=DummyRepo()
+    )
+
+    # 1. High Confidence (70.0), Low Confluence (0) -> Should Bypass G4 Fail and keep BUY
+    signal_high = SignalDecision(
+        symbol="EURUSD",
+        timeframe="15",
+        feed_source="Yahoo",
+        candle_timestamp="2026-06-24T12:00:00Z",
+        signal="BUY",
+        confidence=70.0,
+        entry=1.1000,
+        stop_loss=1.0950,
+        tp1=1.1100,
+        tp2=1.1200,
+        rr_ratio=3.0,
+        reasons=[],
+        invalidation="",
+        indicators={"rsi14": 50.0, "adx14": 25.0},
+        structure={"trend": "bullish", "bos": "none", "choch": "none"},
+        chart_sync=100.0,
+        warnings=[]
+    )
+
+    sync_status = SyncStatus(
+        provider="Yahoo", timeframe="15", total_bars=100, matched=100, mismatch=0,
+        latency_ms=10.0, chart_source="Y", analysis_source="Y", match_percentage=100.0,
+        missing_candles=0, data_age_seconds=10.0
+    )
+    structure_state = StructureState(trend="bullish", phase="impulse", strength=1.0)
+
+    orchestrator.validate_10_gates(
+        signal=signal_high,
+        sync_status=sync_status,
+        structure_state=structure_state,
+        indicators={"rsi14": 50.0, "adx14": 25.0},
+        zones=[],
+        news_signals=[],
+        ai_explanation={},
+        forced_strategy=None,
+        session_signal=None
+    )
+    assert signal_high.signal == "BUY"
+    assert any("G4 Warning" in warning for warning in signal_high.warnings)
+
+    # 2. Low Confidence (50.0), Low Confluence (0) -> Should trigger G4 Fail and change signal to NO_TRADE
+    signal_low = SignalDecision(
+        symbol="EURUSD",
+        timeframe="15",
+        feed_source="Yahoo",
+        candle_timestamp="2026-06-24T12:00:00Z",
+        signal="BUY",
+        confidence=50.0,
+        entry=1.1000,
+        stop_loss=1.0950,
+        tp1=1.1100,
+        tp2=1.1200,
+        rr_ratio=3.0,
+        reasons=[],
+        invalidation="",
+        indicators={"rsi14": 50.0, "adx14": 25.0},
+        structure={"trend": "bullish", "bos": "none", "choch": "none"},
+        chart_sync=100.0,
+        warnings=[]
+    )
+
+    orchestrator.validate_10_gates(
+        signal=signal_low,
+        sync_status=sync_status,
+        structure_state=structure_state,
+        indicators={"rsi14": 50.0, "adx14": 25.0},
+        zones=[],
+        news_signals=[],
+        ai_explanation={},
+        forced_strategy=None,
+        session_signal=None
+    )
+    assert signal_low.signal == "NO_TRADE"
+    assert any("G4 Fail" in reason for reason in signal_low.reasons)
+
+    # 3. High Confidence (70.0), Score Gap warning -> Should Bypass G5 Fail and keep BUY
+    signal_gap_high = SignalDecision(
+        symbol="EURUSD",
+        timeframe="15",
+        feed_source="Yahoo",
+        candle_timestamp="2026-06-24T12:00:00Z",
+        signal="BUY",
+        confidence=70.0,
+        entry=1.1000,
+        stop_loss=1.0950,
+        tp1=1.1100,
+        tp2=1.1200,
+        rr_ratio=3.0,
+        reasons=[],
+        invalidation="",
+        indicators={"rsi14": 50.0, "adx14": 25.0},
+        structure={"trend": "bullish", "bos": "none", "choch": "none"},
+        chart_sync=100.0,
+        warnings=["Insufficient confluence", "score gap"]
+    )
+
+    orchestrator.validate_10_gates(
+        signal=signal_gap_high,
+        sync_status=sync_status,
+        structure_state=structure_state,
+        indicators={"rsi14": 50.0, "adx14": 25.0},
+        zones=[],
+        news_signals=[],
+        ai_explanation={},
+        forced_strategy=None,
+        session_signal=None
+    )
+    assert signal_gap_high.signal == "BUY"
+
+    # 4. Low Confidence (50.0), Score Gap warning -> Should trigger G5 Fail and change signal to NO_TRADE
+    signal_gap_low = SignalDecision(
+        symbol="EURUSD",
+        timeframe="15",
+        feed_source="Yahoo",
+        candle_timestamp="2026-06-24T12:00:00Z",
+        signal="BUY",
+        confidence=50.0,
+        entry=1.1000,
+        stop_loss=1.0950,
+        tp1=1.1100,
+        tp2=1.1200,
+        rr_ratio=3.0,
+        reasons=[],
+        invalidation="",
+        indicators={"rsi14": 50.0, "adx14": 25.0},
+        structure={"trend": "bullish", "bos": "none", "choch": "none"},
+        chart_sync=100.0,
+        warnings=["Insufficient confluence", "score gap"]
+    )
+
+    orchestrator.validate_10_gates(
+        signal=signal_gap_low,
+        sync_status=sync_status,
+        structure_state=structure_state,
+        indicators={"rsi14": 50.0, "adx14": 25.0},
+        zones=[],
+        news_signals=[],
+        ai_explanation={},
+        forced_strategy=None,
+        session_signal=None
+    )
+    assert signal_gap_low.signal == "NO_TRADE"
+    assert any("G5 Fail" in reason for reason in signal_gap_low.reasons)
+

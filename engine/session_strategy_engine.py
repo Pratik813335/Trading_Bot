@@ -226,9 +226,9 @@ class SessionStrategyEngine:
             reasoning=reason,
             confluences=confluences,
             warnings=warnings,
-            trade_action=direction if (is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE) else "WAIT",
+            trade_action=direction if (direction != "WAIT" and confidence >= MIN_CONFIRMATION_CONFIDENCE) else "WAIT",
             pip_size=pip_size,
-            is_actionable=is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE,
+            is_actionable=bool(direction != "WAIT" and confidence >= MIN_CONFIRMATION_CONFIDENCE),
         )
 
     # ------------------------------------------------------------------
@@ -320,9 +320,9 @@ class SessionStrategyEngine:
             reasoning=reason,
             confluences=confluences,
             warnings=warnings,
-            trade_action=direction if (is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE) else "WAIT",
+            trade_action=direction if (direction != "WAIT" and confidence >= MIN_CONFIRMATION_CONFIDENCE) else "WAIT",
             pip_size=pip_size,
-            is_actionable=is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE,
+            is_actionable=bool(direction != "WAIT" and confidence >= MIN_CONFIRMATION_CONFIDENCE),
         )
 
     # ------------------------------------------------------------------
@@ -418,9 +418,9 @@ class SessionStrategyEngine:
             reasoning=reason,
             confluences=confluences,
             warnings=warnings,
-            trade_action=direction if (is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE) else "WAIT",
+            trade_action=direction if (direction != "WAIT" and confidence >= MIN_CONFIRMATION_CONFIDENCE) else "WAIT",
             pip_size=pip_size,
-            is_actionable=is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE,
+            is_actionable=bool(direction != "WAIT" and confidence >= MIN_CONFIRMATION_CONFIDENCE),
         )
 
     # ------------------------------------------------------------------
@@ -505,9 +505,9 @@ class SessionStrategyEngine:
             reasoning=reason,
             confluences=confluences,
             warnings=warnings,
-            trade_action=direction if (is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE) else "WAIT",
+            trade_action=direction if (direction != "WAIT" and confidence >= MIN_CONFIRMATION_CONFIDENCE) else "WAIT",
             pip_size=pip_size,
-            is_actionable=is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE,
+            is_actionable=bool(direction != "WAIT" and confidence >= MIN_CONFIRMATION_CONFIDENCE),
         )
 
     # ------------------------------------------------------------------
@@ -604,9 +604,9 @@ class SessionStrategyEngine:
             reasoning=reason,
             confluences=confluences,
             warnings=warnings,
-            trade_action=direction if (is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE) else "WAIT",
+            trade_action=direction if (direction != "WAIT" and confidence >= MIN_CONFIRMATION_CONFIDENCE) else "WAIT",
             pip_size=pip_size,
-            is_actionable=is_actionable and confidence >= MIN_CONFIRMATION_CONFIDENCE,
+            is_actionable=bool(direction != "WAIT" and confidence >= MIN_CONFIRMATION_CONFIDENCE),
         )
 
     # ------------------------------------------------------------------

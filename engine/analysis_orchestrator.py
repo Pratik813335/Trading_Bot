@@ -661,14 +661,21 @@ class AnalysisOrchestrator:
                 active_conf = len(getattr(session_signal, "confluences", []))
             else:
                 active_conf = sum(1 for v in signal.confidence_breakdown.values() if v > 0)
-            from config import MIN_CONFIRMATIONS
+            from config import MIN_CONFIRMATIONS, MIN_CONFIRMATION_CONFIDENCE
             if active_conf < MIN_CONFIRMATIONS:
-                gate_failures.append(f"G4 Fail: Insufficient Confluence ({active_conf} < {MIN_CONFIRMATIONS})")
+                if signal.confidence >= MIN_CONFIRMATION_CONFIDENCE:
+                    gate_warnings.append(f"G4 Warning: Insufficient Confluence ({active_conf} < {MIN_CONFIRMATIONS}) - Bypassed due to 60+ confidence")
+                else:
+                    gate_failures.append(f"G4 Fail: Insufficient Confluence ({active_conf} < {MIN_CONFIRMATIONS})")
 
         # G5: Score Gap
         if signal.signal in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
             if "Insufficient confluence" in "".join(signal.warnings) and "gap" in "".join(signal.warnings):
-                gate_failures.append("G5 Fail: Score gap below threshold")
+                from config import MIN_CONFIRMATION_CONFIDENCE
+                if signal.confidence >= MIN_CONFIRMATION_CONFIDENCE:
+                    gate_warnings.append("G5 Warning: Score gap below threshold - Bypassed due to 60+ confidence")
+                else:
+                    gate_failures.append("G5 Fail: Score gap below threshold")
 
         # G6: ADX Trend Strength
         adx = indicators.get("adx14", 0.0)
