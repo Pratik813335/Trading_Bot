@@ -551,7 +551,6 @@ class UnifiedMarketFeed:
                 frame = None
             if frame is not None:
                 frame.metadata.cache_status = "fresh"
-                if not force_refresh:
-                    self.cache.set(cache_key, frame)
+                self.cache.set(cache_key, frame)
                 return frame
         return None

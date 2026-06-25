@@ -12,11 +12,11 @@ import engine.signal_engine_v2
 import core.signal_engine
 import backend.service_container
 
-importlib.reload(storage.signal_repository_v2)
-importlib.reload(engine.signal_engine_v2)
-importlib.reload(core.signal_engine)
-importlib.reload(engine.analysis_orchestrator)
-importlib.reload(backend.service_container)
+for module in [storage.signal_repository_v2, engine.signal_engine_v2, core.signal_engine, engine.analysis_orchestrator, backend.service_container]:
+    try:
+        importlib.reload(module)
+    except Exception:
+        pass
 
 from backend.service_container import build_container
 from core.signal_engine import candle_pattern
@@ -1153,7 +1153,7 @@ def render_lightweight_chart(symbol, timeframe, bundle):
         }});
         resizeObserver.observe(wrapper);
 
-        const refreshIntervalMs = 15000;
+        const refreshIntervalMs = 5000;
         window.setInterval(triggerLocalRefresh, refreshIntervalMs);
         chart.timeScale().fitContent();
         setTimeout(updateOverlay, 300);
@@ -1495,7 +1495,7 @@ def render_svg_chart(symbol, timeframe, bundle):
           dragging = false;
         }});
 
-        window.setInterval(triggerLocalRefresh, 15000);
+        window.setInterval(triggerLocalRefresh, 5000);
         renderSvgChart();
       </script>
     </div>
@@ -1790,6 +1790,7 @@ def render_tradingview_widget(symbol, timeframe, bundle):
         }};
 
         document.getElementById("{panel_id}_refresh").onclick = triggerLocalRefresh;
+        window.setInterval(triggerLocalRefresh, 5000);
 
         // Minimise functionality
         const minimiseBtn = document.getElementById("{panel_id}_minimise");
@@ -2056,12 +2057,15 @@ class PanelApiHandler(http.server.BaseHTTPRequestHandler):
             
             global _global_orchestrator
             if _global_orchestrator is None:
-                from backend.service_container import build_container
-                container = build_container()
+                try:
+                    container = _get_container_v2()
+                except Exception:
+                    from backend.service_container import build_container
+                    container = build_container()
                 _global_orchestrator = container["analysis_orchestrator"]
             
             try:
-                bundle = _global_orchestrator.analyze(symbol, timeframe)
+                bundle = _global_orchestrator.analyze(symbol, timeframe, force_refresh=True)
                 if bundle is None:
                     self.send_response(500)
                     self.end_headers()
