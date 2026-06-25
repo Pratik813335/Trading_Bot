@@ -64,6 +64,18 @@ def inject_styles():
     st.markdown(
         """
         <style>
+        /* Keep elements 100% opaque during reruns to avoid screen blurring/flashing */
+        [data-testid="stAppViewBlockContainer"], 
+        .element-container, 
+        div[data-testid="stBlock"], 
+        div[data-testid="stHorizontalBlock"], 
+        div[data-testid="stVerticalBlock"], 
+        div[data-testid="stTab"], 
+        [data-baseweb="tab-panel"] {
+            opacity: 1 !important;
+            transition: none !important;
+        }
+
         .stApp {
             background:
                 radial-gradient(circle at top left, rgba(20, 184, 166, 0.10), transparent 28%),
@@ -312,14 +324,16 @@ def build_trade_panel_payload(bundle):
     has_mismatch = any("Feed mismatch" in w or "mismatch" in w.lower() for w in bundle.signal.warnings)
     is_trade_removed = bundle.signal.signal == "TRADE_REMOVED"
     actionable = (bundle.signal.signal in ["BUY", "SELL", "STRONG_BUY", "STRONG_SELL"] 
-                  and bundle.signal.stop_loss not in [None, 0, 0.0] 
-                  and not has_mismatch)
+                  and bundle.signal.stop_loss not in [None, 0, 0.0])
     show_levels = actionable and bundle.signal.entry not in [None, 0, 0.0]
     
     if is_trade_removed:
         status = "TRADE REMOVED"
     else:
-        status = "Approved" if actionable else ("Blocked / Feed Mismatch" if has_mismatch else "Blocked / No Trade")
+        if actionable:
+            status = "Approved (Warning)" if has_mismatch else "Approved"
+        else:
+            status = "Blocked / Feed Mismatch" if has_mismatch else "Blocked / No Trade"
         
     reasons = [r for r in (bundle.signal.reasons or []) if not r.startswith("Gemini:")]
     return {
@@ -1972,6 +1986,46 @@ import urllib.parse
 
 _global_orchestrator = None
 _tab_visibility = {}
+_BACKGROUND_ANALYSIS_RESULTS = {}
+
+def run_analysis_in_background(session_uuid, symbol, timeframe, forced, live_mode):
+    try:
+        # Run orchestrator analyze
+        bundle = orchestrator.analyze(symbol, timeframe, forced_strategy=forced, force_refresh=True)
+        if bundle is not None:
+            # Log signal
+            orchestrator.log_signal(bundle)
+            
+            # Extract candle close metrics
+            from datetime import datetime, timezone
+            last_row = bundle.candles.iloc[-1]
+            last_price = float(last_row["close"])
+            last_candle_time = last_row.name.isoformat() if isinstance(last_row.name, pd.Timestamp) else str(last_row.name)
+            
+            _BACKGROUND_ANALYSIS_RESULTS[session_uuid] = {
+                "analysis_bundle": bundle,
+                "analysis_symbol": symbol,
+                "analysis_timeframe": timeframe,
+                "last_analysis_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "last_analysis_time_dt": datetime.now(timezone.utc),
+                "last_price": last_price,
+                "last_candle_time": last_candle_time,
+                "analysis_status": "LIVE" if live_mode else "IDLE",
+                "is_analyzing": False,
+                "update_trigger_reason": "Analysis complete"
+            }
+        else:
+            _BACKGROUND_ANALYSIS_RESULTS[session_uuid] = {
+                "analysis_status": "ERROR",
+                "is_analyzing": False,
+                "update_trigger_reason": "Failed to fetch/analyze data"
+            }
+    except Exception as e:
+        _BACKGROUND_ANALYSIS_RESULTS[session_uuid] = {
+            "analysis_status": "ERROR",
+            "is_analyzing": False,
+            "update_trigger_reason": f"Error: {e}"
+        }
 
 class PanelApiHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -2155,11 +2209,10 @@ def adjust_live_engine_config(symbol, timeframe):
         
     st.session_state.refresh_sec = refresh_sec
     st.session_state.pips_thresh = pips_thresh
-    st.session_state.trigger_mode = trigger_mode
 
 
 def check_reanalysis_triggers(symbol, timeframe, forced_strategy):
-    # Check if active position has closed (SL/TP hit or early close)
+    # Check if active position has closed (SL/TP hit or early close) in local signal repository (no network!)
     current_active = signal_repository.get_active_position(symbol)
     current_active_id = current_active.get("logged_at") if current_active else None
     prev_active_id = st.session_state.get("last_active_position_id")
@@ -2170,84 +2223,15 @@ def check_reanalysis_triggers(symbol, timeframe, forced_strategy):
         
     st.session_state.last_active_position_id = current_active_id
 
-    last_candle_time = st.session_state.get("last_candle_time")
-    last_price = st.session_state.get("last_price")
+    # Check if time interval elapsed since last run
     last_analysis_time_dt = st.session_state.get("last_analysis_time_dt")
-    
-    # 1. Fetch fresh data (bypass cache)
-    try:
-        market_frame = orchestrator.market_feed.fetch(symbol, timeframe, force_refresh=True)
-    except Exception as e:
-        return False, f"Feed fetch error: {e}"
-        
-    if market_frame is None or market_frame.candles.empty:
-        return False, "Empty feed"
-        
-    candles = market_frame.candles
-    last_row = candles.iloc[-1]
-    current_price = float(last_row["close"])
-    
-    if isinstance(last_row.name, pd.Timestamp):
-        current_candle_time = last_row.name.isoformat()
-    else:
-        current_candle_time = str(last_row.name)
-    
-    # 2. Check if a new candle is formed
-    if last_candle_time is not None and current_candle_time != last_candle_time:
-        return True, "New candle formed"
-        
-    # 3. Check if price moved beyond threshold
-    if last_price is not None:
-        pip_size = 0.0001
-        try:
-            pip_size = orchestrator.session_engine.get_pip_size(symbol, candles)
-        except Exception:
-            if "JPY" in symbol or "BTC" in symbol or symbol == "XAUUSD":
-                pip_size = 0.01
-        
-        price_diff = abs(current_price - last_price)
-        threshold_price = st.session_state.get("pips_thresh", 2.0) * pip_size
-        if price_diff >= threshold_price:
-            return True, f"Price moved {price_diff/pip_size:.1f} pips"
-            
-    # 4. Check if time interval elapsed since last run
     if last_analysis_time_dt is not None:
         from datetime import datetime, timezone
         elapsed = (datetime.now(timezone.utc) - last_analysis_time_dt).total_seconds()
-        if elapsed >= st.session_state.get("refresh_sec", 5):
-            return True, f"Timer elapsed ({st.session_state.get('refresh_sec')}s)"
+        refresh_sec = int(st.session_state.get("refresh_sec", 5))
+        if elapsed >= refresh_sec:
+            return True, f"Timer elapsed ({refresh_sec}s)"
             
-    # 5. Check if indicators crossed key levels (RSI crosses 30/70, MACD crossover)
-    try:
-        enriched_candles, _ = orchestrator.indicator_engine.enrich(candles)
-        if len(enriched_candles) >= 2:
-            prev_row = enriched_candles.iloc[-2]
-            curr_row = enriched_candles.iloc[-1]
-            
-            # RSI cross
-            if "rsi14" in curr_row and "rsi14" in prev_row:
-                c_rsi = curr_row["rsi14"]
-                p_rsi = prev_row["rsi14"]
-                if (p_rsi <= 30 < c_rsi) or (p_rsi >= 30 > c_rsi) or (p_rsi <= 70 < c_rsi) or (p_rsi >= 70 > c_rsi):
-                    return True, f"RSI crossover ({c_rsi:.1f})"
-            
-            # MACD cross
-            if "macd" in curr_row and "macd_signal" in curr_row and "macd" in prev_row and "macd_signal" in prev_row:
-                c_macd, c_sig = curr_row["macd"], curr_row["macd_signal"]
-                p_macd, p_sig = prev_row["macd"], prev_row["macd_signal"]
-                if (p_macd <= p_sig and c_macd > c_sig) or (p_macd >= p_sig and c_macd < c_sig):
-                    return True, "MACD crossover"
-                    
-            # EMA alignment check
-            for ema_col in ["ema50", "ema200"]:
-                if ema_col in curr_row and ema_col in prev_row:
-                    c_ema, p_ema = curr_row[ema_col], prev_row[ema_col]
-                    c_close, p_close = curr_row["close"], prev_row["close"]
-                    if (p_close <= p_ema and c_close > c_ema) or (p_close >= p_ema and c_close < c_ema):
-                        return True, f"EMA crossover ({ema_col})"
-    except Exception:
-        pass
-        
     return False, "No trigger met"
 
 with st.container():
@@ -2337,6 +2321,13 @@ elif st.session_state.live_mode:
         forced = None if selected_strategy == "Auto (Session-Aware)" else selected_strategy
         should_run, trigger_reason = check_reanalysis_triggers(symbol, timeframe, forced)
 
+# ── Check and harvest completed background analysis ──
+session_uuid = st.session_state.session_uuid
+if session_uuid in _BACKGROUND_ANALYSIS_RESULTS:
+    res = _BACKGROUND_ANALYSIS_RESULTS.pop(session_uuid)
+    for k, v in res.items():
+        st.session_state[k] = v
+
 # 3. Perform analysis if triggered
 if should_run and not st.session_state.is_analyzing:
     st.session_state.is_analyzing = True
@@ -2356,41 +2347,42 @@ if should_run and not st.session_state.is_analyzing:
     if _global_orchestrator:
         _global_orchestrator.forced_strategy = forced
         
-    bundle = None
     if not is_silent:
+        # On first run or manual force analysis, do a synchronous analysis so user doesn't see a blank/empty dashboard
         with st.spinner("⏳ Analyzing market structure and executing rule checks..."):
             try:
                 bundle = orchestrator.analyze(symbol, timeframe, forced_strategy=forced, force_refresh=True)
+                if bundle is not None:
+                    st.session_state.analysis_bundle = bundle
+                    st.session_state.analysis_symbol = symbol
+                    st.session_state.analysis_timeframe = timeframe
+                    orchestrator.log_signal(bundle)
+                    
+                    # Update trackers
+                    from datetime import datetime, timezone
+                    st.session_state.last_analysis_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    st.session_state.last_analysis_time_dt = datetime.now(timezone.utc)
+                    
+                    last_row = bundle.candles.iloc[-1]
+                    st.session_state.last_price = float(last_row["close"])
+                    st.session_state.last_candle_time = last_row.name.isoformat() if isinstance(last_row.name, pd.Timestamp) else str(last_row.name)
+                    st.session_state.analysis_status = "LIVE" if st.session_state.live_mode else "IDLE"
+                else:
+                    st.session_state.analysis_status = "ERROR"
+                    st.session_state.update_trigger_reason = "Failed to fetch/analyze data"
             except Exception as e:
                 st.session_state.analysis_status = "ERROR"
                 st.session_state.update_trigger_reason = f"Error: {e}"
+            finally:
+                st.session_state.is_analyzing = False
     else:
-        try:
-            bundle = orchestrator.analyze(symbol, timeframe, forced_strategy=forced, force_refresh=True)
-        except Exception as e:
-            st.session_state.analysis_status = "ERROR"
-            st.session_state.update_trigger_reason = f"Error: {e}"
-            
-    if bundle is None:
-        st.session_state.analysis_status = "ERROR"
-        st.session_state.update_trigger_reason = "Failed to fetch/analyze data"
-    else:
-        st.session_state.analysis_bundle = bundle
-        st.session_state.analysis_symbol = symbol
-        st.session_state.analysis_timeframe = timeframe
-        orchestrator.log_signal(bundle)
-        
-        # Update trackers
-        from datetime import datetime, timezone
-        st.session_state.last_analysis_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        st.session_state.last_analysis_time_dt = datetime.now(timezone.utc)
-        
-        last_row = bundle.candles.iloc[-1]
-        st.session_state.last_price = float(last_row["close"])
-        st.session_state.last_candle_time = last_row.name.isoformat() if isinstance(last_row.name, pd.Timestamp) else str(last_row.name)
-        st.session_state.analysis_status = "LIVE" if st.session_state.live_mode else "IDLE"
-
-    st.session_state.is_analyzing = False
+        # Run in a background thread to prevent UI freezing and screen blurring/flickering
+        t = threading.Thread(
+            target=run_analysis_in_background,
+            args=(session_uuid, symbol, timeframe, forced, st.session_state.live_mode),
+            daemon=True
+        )
+        t.start()
 
 bundle = st.session_state.analysis_bundle
 

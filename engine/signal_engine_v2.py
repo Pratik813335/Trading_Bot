@@ -261,15 +261,16 @@ class SignalEngineV2:
         adjusted_min_confirmations = MIN_CONFIRMATIONS + min_confluences_offset
 
         if signal in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
-            if (active_confirmations < adjusted_min_confirmations or
-                weighted_confidence < adjusted_min_score or
-                gap < MIN_SIGNAL_GAP):
-                signal = "NO_TRADE"
-                warnings.append(
-                    f"Insufficient confluence (tuned): {active_confirmations} factors (min {adjusted_min_confirmations}), "
-                    f"score {weighted_confidence} (min {adjusted_min_score}), "
-                    f"gap {gap:.0f} (min {MIN_SIGNAL_GAP})"
-                )
+            if weighted_confidence < MIN_CONFIRMATION_CONFIDENCE:
+                if (active_confirmations < adjusted_min_confirmations or
+                    weighted_confidence < adjusted_min_score or
+                    gap < MIN_SIGNAL_GAP):
+                    signal = "NO_TRADE"
+                    warnings.append(
+                        f"Insufficient confluence (tuned): {active_confirmations} factors (min {adjusted_min_confirmations}), "
+                        f"score {weighted_confidence} (min {adjusted_min_score}), "
+                        f"gap {gap:.0f} (min {MIN_SIGNAL_GAP})"
+                    )
 
         if weighted_confidence < MIN_CONFIRMATION_CONFIDENCE:
             signal = "NO_TRADE"

@@ -341,8 +341,9 @@ class SessionStrategyEngine:
         rsi_val = indicators.get("rsi14") or 50.0
         adx_val = indicators.get("adx14") or 0.0
 
-        zone_sups = sorted([z for z in zones if z.type == "support"], key=lambda z: z.strength, reverse=True)
-        zone_res = sorted([z for z in zones if z.type == "resistance"], key=lambda z: z.strength, reverse=True)
+        # Sort by proximity to current price to get closest S/R zones
+        zone_sups = sorted([z for z in zones if z.type == "support"], key=lambda z: abs(price - z.top))
+        zone_res = sorted([z for z in zones if z.type == "resistance"], key=lambda z: abs(price - z.bottom))
 
         closest_support = zone_sups[0].top if zone_sups else None
         closest_resistance = zone_res[0].bottom if zone_res else None
@@ -351,8 +352,8 @@ class SessionStrategyEngine:
             return self._default_wait(session, symbol, candles, pip_size, None, None, ["Missing valid S/R zones for Range strategy"])
 
         range_size = closest_resistance - closest_support
-        at_support = (price - closest_support) <= range_size * 0.20
-        at_resistance = (closest_resistance - price) <= range_size * 0.20
+        at_support = -5 * pip_size <= (price - closest_support) <= range_size * 0.20
+        at_resistance = -5 * pip_size <= (closest_resistance - price) <= range_size * 0.20
 
         direction = "WAIT"
         if at_support:
@@ -382,12 +383,16 @@ class SessionStrategyEngine:
         if direction == "BUY":
             entry = price
             sl = closest_support - 15 * pip_size
+            if sl >= entry:
+                sl = entry - 15 * pip_size
             tp1 = closest_support + range_size * 0.5
             tp2 = closest_resistance - atr_price * 0.5
             reason = "Range Support BUY Bounce"
         elif direction == "SELL":
             entry = price
             sl = closest_resistance + 15 * pip_size
+            if sl <= entry:
+                sl = entry + 15 * pip_size
             tp1 = closest_resistance - range_size * 0.5
             tp2 = closest_support + atr_price * 0.5
             reason = "Range Resistance SELL Reject"
