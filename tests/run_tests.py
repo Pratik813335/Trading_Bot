@@ -24,7 +24,8 @@ from tests.test_news_intelligence import (
     test_economic_surprise_and_interpretation,
     test_contrarian_bias_from_rsi,
     test_technical_fundamental_conflict_gate,
-    test_confluence_gate_bypass
+    test_confluence_gate_bypass,
+    test_session_actionable_gate_bypass
 )
 from tests.test_optimizer import test_auto_tune_parameters
 
@@ -139,6 +140,13 @@ if __name__ == "__main__":
         print("  [PASS] test_confluence_gate_bypass")
     except Exception as e:
         print(f"  [FAIL] test_confluence_gate_bypass: {e}")
+        passed = False
+
+    try:
+        test_session_actionable_gate_bypass()
+        print("  [PASS] test_session_actionable_gate_bypass")
+    except Exception as e:
+        print(f"  [FAIL] test_session_actionable_gate_bypass: {e}")
         passed = False
 
     print("\nExecuting Strategy Optimizer Tests...")

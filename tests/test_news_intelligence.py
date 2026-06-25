@@ -315,3 +315,114 @@ def test_confluence_gate_bypass():
     assert signal_gap_low.signal == "NO_TRADE"
     assert any("G5 Fail" in reason for reason in signal_gap_low.reasons)
 
+
+def test_session_actionable_gate_bypass():
+    from engine.session_strategy_engine import SessionSignal
+    orchestrator = AnalysisOrchestrator(
+        market_feed=None,
+        indicator_engine=None,
+        structure_engine=None,
+        zone_engine=None,
+        signal_engine=None,
+        renderer=None,
+        signal_repository=None,
+        forex_factory_feed=DummyFeed(),
+        news_engine=NewsIntelligenceEngine(),
+        news_signal_repository=DummyRepo()
+    )
+
+    # 1. Actionable Session Signal with R:R = 1.5 and ranging trend -> Should bypass G2 and G7
+    signal_session = SignalDecision(
+        symbol="EURUSD",
+        timeframe="15",
+        feed_source="Yahoo",
+        candle_timestamp="2026-06-24T12:00:00Z",
+        signal="BUY",
+        confidence=70.0,
+        entry=1.1000,
+        stop_loss=1.0900,
+        tp1=1.1150,
+        tp2=1.1200,
+        rr_ratio=1.5, # low R:R
+        reasons=[],
+        invalidation="",
+        indicators={"rsi14": 50.0, "adx14": 25.0},
+        structure={"trend": "range", "bos": "none", "choch": "none"}, # ranging market
+        chart_sync=100.0,
+        warnings=[]
+    )
+
+    sync_status = SyncStatus(
+        provider="Yahoo", timeframe="15", total_bars=100, matched=100, mismatch=0,
+        latency_ms=10.0, chart_source="Y", analysis_source="Y", match_percentage=100.0,
+        missing_candles=0, data_age_seconds=10.0
+    )
+    structure_state = StructureState(trend="range", phase="consolidation", strength=1.0)
+
+    session_sig = SessionSignal(
+        pair="EURUSD",
+        session="New York",
+        strategy_used="Trend Following",
+        entry_price=1.1000,
+        stop_loss=1.0900,
+        take_profit_1=1.1150,
+        take_profit_2=1.1200,
+        rr_ratio=1.5,
+        confidence=70,
+        reasoning="Session BUY",
+        confluences=["EMA crossover"],
+        warnings=[],
+        trade_action="BUY",
+        is_actionable=True
+    )
+
+    orchestrator.validate_10_gates(
+        signal=signal_session,
+        sync_status=sync_status,
+        structure_state=structure_state,
+        indicators={"rsi14": 50.0, "adx14": 25.0},
+        zones=[],
+        news_signals=[],
+        ai_explanation={},
+        forced_strategy=None,
+        session_signal=session_sig
+    )
+    # Both G2 (ranging) and G7 (low R:R) must be bypassed, keeping the BUY signal active!
+    assert signal_session.signal == "BUY"
+
+    # 2. No session signal, same low R:R and ranging trend -> Should fail G2 and G7, changing signal to NO_TRADE
+    signal_no_session = SignalDecision(
+        symbol="EURUSD",
+        timeframe="15",
+        feed_source="Yahoo",
+        candle_timestamp="2026-06-24T12:00:00Z",
+        signal="BUY",
+        confidence=70.0,
+        entry=1.1000,
+        stop_loss=1.0900,
+        tp1=1.1150,
+        tp2=1.1200,
+        rr_ratio=1.5,
+        reasons=[],
+        invalidation="",
+        indicators={"rsi14": 50.0, "adx14": 25.0},
+        structure={"trend": "range", "bos": "none", "choch": "none"},
+        chart_sync=100.0,
+        warnings=[]
+    )
+
+    orchestrator.validate_10_gates(
+        signal=signal_no_session,
+        sync_status=sync_status,
+        structure_state=structure_state,
+        indicators={"rsi14": 50.0, "adx14": 25.0},
+        zones=[],
+        news_signals=[],
+        ai_explanation={},
+        forced_strategy=None,
+        session_signal=None
+    )
+    assert signal_no_session.signal == "NO_TRADE"
+    assert any("G2 Fail" in reason for reason in signal_no_session.reasons)
+    assert any("G7 Fail" in reason for reason in signal_no_session.reasons)
+

@@ -406,14 +406,18 @@ class AnalysisOrchestrator:
                     conflict_score += w
 
             # Apply consensus rules
+            is_session_actionable = (session_signal is not None and getattr(session_signal, "is_actionable", False))
             if conflict_score >= 8:
-                signal.signal = "NO_TRADE"
-                signal.stop_loss = 0.0
-                signal.tp1 = 0.0
-                signal.tp2 = 0.0
-                signal.rr_ratio = 0.0
-                signal.reasons = ["HTF Bias Conflict"] + [r for r in signal.reasons if r != "ANALYSIS BLOCKED"]
-                signal.warnings = [f"No trade: Multi-timeframe conflict score {conflict_score} >= 8 conflicts with entry direction"] + list(signal.warnings)
+                if is_session_actionable:
+                    signal.warnings = [f"Multi-timeframe conflict score {conflict_score} >= 8 conflicts with entry direction"] + list(signal.warnings)
+                else:
+                    signal.signal = "NO_TRADE"
+                    signal.stop_loss = 0.0
+                    signal.tp1 = 0.0
+                    signal.tp2 = 0.0
+                    signal.rr_ratio = 0.0
+                    signal.reasons = ["HTF Bias Conflict"] + [r for r in signal.reasons if r != "ANALYSIS BLOCKED"]
+                    signal.warnings = [f"No trade: Multi-timeframe conflict score {conflict_score} >= 8 conflicts with entry direction"] + list(signal.warnings)
             else:
                 if align_score >= 10:
                     signal.confidence = min(95.0, signal.confidence + 15.0)
@@ -422,12 +426,13 @@ class AnalysisOrchestrator:
                     signal.confidence = min(95.0, signal.confidence + 8.0)
                     signal.reasons = ["HTF alignment (+8)"] + list(signal.reasons)
                     
-                if 5 <= conflict_score < 7:
-                    signal.confidence = max(0.0, signal.confidence - 20.0)
-                    signal.warnings = ["MTF conflict penalty: -20 confidence (conflict score 5-6)"] + list(signal.warnings)
-                elif 3 <= conflict_score < 5:
-                    signal.confidence = max(0.0, signal.confidence - 10.0)
-                    signal.warnings = ["MTF conflict penalty: -10 confidence (conflict score 3-4)"] + list(signal.warnings)
+                if not is_session_actionable:
+                    if 5 <= conflict_score < 7:
+                        signal.confidence = max(0.0, signal.confidence - 20.0)
+                        signal.warnings = ["MTF conflict penalty: -20 confidence (conflict score 5-6)"] + list(signal.warnings)
+                    elif 3 <= conflict_score < 5:
+                        signal.confidence = max(0.0, signal.confidence - 10.0)
+                        signal.warnings = ["MTF conflict penalty: -10 confidence (conflict score 3-4)"] + list(signal.warnings)
 
         # Build multi-timeframe analysis summaries
         mtf_analysis = {}
@@ -640,11 +645,12 @@ class AnalysisOrchestrator:
         if data_age_minutes > 3 * tf_minutes:
             gate_failures.append(f"G1 Fail: Stale Data ({data_age_minutes:.1f}m old, max {3 * tf_minutes}m)")
 
-        # G2: Market Structure (Skip structure check if we are explicitly running Range Trader, Scalping, or Breakout strategies)
+        # G2: Market Structure (Skip structure check if we are explicitly running Range Trader, Scalping, or Breakout strategies, or if session signal is actionable)
         if signal.signal in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
             is_ranging_or_breakout_strategy = (
                 forced_strategy in ["Range Trader", "Quick Scalper", "Breakout Trader"] or
-                (session_signal is not None and getattr(session_signal, "strategy_used", None) in ["Range Trading", "Scalping", "Breakout Trading"])
+                (session_signal is not None and getattr(session_signal, "strategy_used", None) in ["Range Trading", "Scalping", "Breakout Trading"]) or
+                (session_signal is not None and getattr(session_signal, "is_actionable", False))
             )
             if not is_ranging_or_breakout_strategy:
                 if structure_state.trend in ["range", "ranging", "mixed"]:
@@ -686,8 +692,11 @@ class AnalysisOrchestrator:
         # G7: Risk-Reward
         if signal.signal in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
             from core.risk import MIN_RISK_REWARD
-            if signal.rr_ratio < MIN_RISK_REWARD:
-                gate_failures.append(f"G7 Fail: Risk:Reward too low ({signal.rr_ratio:.2f} < {MIN_RISK_REWARD})")
+            required_rr = MIN_RISK_REWARD
+            if session_signal is not None and getattr(session_signal, "is_actionable", False):
+                required_rr = 0.5
+            if signal.rr_ratio < required_rr:
+                gate_failures.append(f"G7 Fail: Risk:Reward too low ({signal.rr_ratio:.2f} < {required_rr:.2f})")
 
         # G8: News Filter & Technical-Fundamental Conflict Check
         fundamental_bias = "NEUTRAL"
