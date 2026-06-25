@@ -2340,8 +2340,15 @@ elif st.session_state.live_mode:
 # 3. Perform analysis if triggered
 if should_run and not st.session_state.is_analyzing:
     st.session_state.is_analyzing = True
-    st.session_state.analysis_status = "ANALYZING"
-    st.session_state.update_trigger_reason = trigger_reason
+    
+    is_silent = not st.session_state.get("force_analyze", False) and st.session_state.analysis_bundle is not None
+    
+    if not is_silent:
+        st.session_state.analysis_status = "ANALYZING"
+        st.session_state.update_trigger_reason = trigger_reason
+    else:
+        st.session_state.update_trigger_reason = trigger_reason
+        
     st.session_state.force_analyze = False
     
     forced = None if selected_strategy == "Auto (Session-Aware)" else selected_strategy
@@ -2350,7 +2357,14 @@ if should_run and not st.session_state.is_analyzing:
         _global_orchestrator.forced_strategy = forced
         
     bundle = None
-    with st.spinner("⏳ Analyzing market structure and executing rule checks..."):
+    if not is_silent:
+        with st.spinner("⏳ Analyzing market structure and executing rule checks..."):
+            try:
+                bundle = orchestrator.analyze(symbol, timeframe, forced_strategy=forced, force_refresh=True)
+            except Exception as e:
+                st.session_state.analysis_status = "ERROR"
+                st.session_state.update_trigger_reason = f"Error: {e}"
+    else:
         try:
             bundle = orchestrator.analyze(symbol, timeframe, forced_strategy=forced, force_refresh=True)
         except Exception as e:
@@ -2419,13 +2433,6 @@ status_label = st.session_state.get("analysis_status", "STOPPED")
 reason = st.session_state.get("update_trigger_reason", "System Start")
 last_time = st.session_state.get("last_analysis_time", "Never")
 
-next_check = "n/a"
-if st.session_state.live_mode and st.session_state.last_analysis_time_dt is not None:
-    from datetime import datetime, timezone
-    elapsed = (datetime.now(timezone.utc) - st.session_state.last_analysis_time_dt).total_seconds()
-    remaining = max(0.0, float(st.session_state.refresh_sec) - elapsed)
-    next_check = f"~{int(remaining)}s"
-
 current_sig = bundle.signal.signal if bundle else "--"
 current_conf = f"{bundle.signal.confidence:.2f}%" if bundle and bundle.signal.confidence is not None else "--"
 current_bias = bundle.chart_payload.get("overlays", {}).get("structure", {}).get("trend", "n/a").upper() if bundle else "--"
@@ -2455,10 +2462,6 @@ st.markdown(
         <div style='border-right: 1px solid rgba(148, 163, 184, 0.15); padding-right: 10px;'>
             <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;'>Last Analysis Time</div>
             <div style='font-size: 14px; font-weight: 700; color: #0f172a; margin-top: 4px;'>{last_time}</div>
-        </div>
-        <div style='border-right: 1px solid rgba(148, 163, 184, 0.15); padding-right: 10px;'>
-            <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;'>Next Check In</div>
-            <div style='font-size: 14px; font-weight: 700; color: #0f172a; margin-top: 4px;'>{next_check}</div>
         </div>
         <div style='border-right: 1px solid rgba(148, 163, 184, 0.15); padding-right: 10px;'>
             <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;'>Market Bias</div>
@@ -3552,7 +3555,7 @@ if st.session_state.get("live_mode", False):
     if visibility_state == "hidden":
         sleep_duration = 15.0
     else:
-        sleep_duration = 2.0
+        sleep_duration = 1.0
         
     import time
     time.sleep(sleep_duration)
