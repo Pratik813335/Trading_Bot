@@ -569,6 +569,7 @@ class UnifiedMarketFeed:
     def __init__(self, providers: list[MarketProvider], cache: InMemoryTTLCache):
         self.providers = providers
         self.cache = cache
+        self.provider_cooldowns = {}  # maps provider_name -> timestamp of last failure
 
     def fetch(self, symbol: str, timeframe: str, force_refresh: bool = False) -> MarketFrame | None:
         cache_key = (symbol, timeframe)
@@ -578,13 +579,25 @@ class UnifiedMarketFeed:
                 cached.metadata.cache_status = "cached"
                 return cached
 
+        import time
+        now = time.time()
         for provider in self.providers:
             if symbol not in provider.get_symbols():
                 continue
+                
+            p_name = provider.provider_name
+            # Skip if this provider recently failed within the last 60 seconds
+            if p_name in self.provider_cooldowns:
+                if now - self.provider_cooldowns[p_name] < 60.0:
+                    continue
+                else:
+                    del self.provider_cooldowns[p_name]
+
             try:
                 frame = provider.get_candles(symbol, timeframe)
             except Exception:
                 frame = None
+                
             if frame is not None:
                 frame.metadata.cache_status = "fresh"
                 # Enrich with quote snapshot
@@ -601,4 +614,8 @@ class UnifiedMarketFeed:
                     pass
                 self.cache.set(cache_key, frame)
                 return frame
+            else:
+                # Mark provider as failed to avoid retrying it for other timeframes
+                self.provider_cooldowns[p_name] = now
+                
         return None
