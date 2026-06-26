@@ -1556,6 +1556,9 @@ def render_tradingview_widget(symbol, timeframe, bundle):
               <span style="width:8px;height:8px;border-radius:50%;background:\${{statusColor}};display:inline-block;box-shadow:0 0 8px \${{statusColor}};"></span>
               Trading Panel
             </span>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <button type="button" id="{panel_id}_minimise" style="border:none;background:rgba(255,255,255,0.16);color:#fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-weight:700;font-size:14px;transition:background 0.2s;">−</button>
+            </div>
           </div>
           <div id="{panel_id}_content" style="padding:16px;">
             <div style="color:#cbd5e1;font-size:14px;font-weight:600;">Connecting to Live Analysis Engine...</div>
@@ -2201,7 +2204,7 @@ if settings_changed:
     st.session_state.update_trigger_reason = "Settings Changed"
 
 # 2. Perform live or manual analysis
-from datetime import timezone
+from datetime import datetime, timezone
 
 if st.session_state.live_mode:
     # Render the custom websocket listener component to trigger script rerun on websocket pushes

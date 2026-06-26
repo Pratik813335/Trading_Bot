@@ -68,6 +68,13 @@
                 }, "*");
             }
         });
+
+        // Notify Streamlit that the component is ready to receive render requests
+        window.parent.postMessage({
+            isStreamlitMessage: true,
+            type: "streamlit:componentReady",
+            apiVersion: 1
+        }, "*");
     </script>
 </head>
 <body style="margin: 0; padding: 0; background: transparent; overflow: hidden; height: 0; width: 0;">
