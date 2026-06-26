@@ -2053,11 +2053,12 @@ def render_live_metrics_js(symbol, timeframe):
           overflow:hidden; margin:5px 0 3px; }}
       .ld-conf-fill {{ height:100%; border-radius:999px;
           transition:width 0.4s cubic-bezier(.4,0,.2,1); }}
+      @keyframes ldpulse {{ 0%,100%{{opacity:1;}} 50%{{opacity:0.35;}} }}
     </style>
     <div id="ld_{uid}">
       <div class="ld-status" id="ld_status_{uid}">
-        <span class="ld-badge" id="ld_live_{uid}" style="background:rgba(100,116,139,0.12);color:#64748b;">
-          <span class="ld-dot" style="background:#64748b;"></span>LOADING
+        <span class="ld-badge" id="ld_live_{uid}" style="background:rgba(34,197,94,0.12);color:#16a34a;">
+          <span class="ld-dot" style="background:#22c55e;animation:ldpulse 1.5s infinite;"></span>LIVE
         </span>
         <span style="font-size:13px;font-weight:700;color:#0f172a;" id="ld_sig_{uid}">—</span>
         <span style="font-size:13px;color:#475569;" id="ld_sym_{uid}">{symbol} · {timeframe}m</span>
@@ -2193,6 +2194,14 @@ def run_analysis_in_background(session_uuid, symbol, timeframe, forced, live_mod
                 "is_analyzing": False,
                 "update_trigger_reason": "Analysis complete"
             }
+            # Also refresh the JS panel cache so the live metrics dashboard shows fresh data immediately
+            import time as _bt
+            try:
+                payload = build_trade_panel_payload(bundle)
+                _latest_panel_data[(symbol, timeframe)] = payload
+                _latest_panel_ts[(symbol, timeframe)] = _bt.time()
+            except Exception:
+                pass
         else:
             _BACKGROUND_ANALYSIS_RESULTS[session_uuid] = {
                 "analysis_status": "ERROR",
@@ -2354,7 +2363,6 @@ news_signal_repository = container.get("news_signal_repository")
 forex_factory_feed = container.get("forex_factory_feed")
 
 start_panel_api_server()
-start_analysis_loop()
 
 def adjust_live_engine_config(symbol, timeframe):
     """
@@ -3720,25 +3728,15 @@ with levels_tab:
         else:
             st.info("No swing points logged in this window.")
 
-# ── Update background analysis target so the timer thread knows what to analyze ──
-_analysis_target.update({
-    "active": st.session_state.get("live_mode", False),
-    "symbol": st.session_state.analysis_symbol,
-    "timeframe": st.session_state.analysis_timeframe,
-    "refresh_sec": int(st.session_state.get("refresh_sec", 5)),
-})
-start_analysis_loop()
-
 # ── Live Mode Auto-Refresh Loop ──
-# Rerun every 10s just to sync tabs/deep analysis — live metrics update via JS (no rerun needed)
 if st.session_state.get("live_mode", False):
     sess_id = st.session_state.get("session_uuid")
     visibility_state = _tab_visibility.get(sess_id, "visible")
 
     if visibility_state == "hidden":
-        sleep_duration = 30.0
+        sleep_duration = 15.0
     else:
-        sleep_duration = 10.0
+        sleep_duration = 1.0
 
     import time
     time.sleep(sleep_duration)
