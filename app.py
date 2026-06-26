@@ -1680,7 +1680,7 @@ def render_tradingview_widget(symbol, timeframe, bundle):
         fullscreenButton.onclick = () => {{
           if (!document.fullscreenElement) {{
             shell.requestFullscreen();
-          } else {{
+          }} else {{
             document.exitFullscreen();
           }}
         }};
@@ -1720,66 +1720,6 @@ def render_tradingview_widget(symbol, timeframe, bundle):
         let isMinimised = false;
         let originalHeight = "440px";
 
-        minimiseBtn.onclick = (e) => {{
-          e.stopPropagation();
-          isMinimised = !isMinimised;
-          if (isMinimised) {{
-            originalHeight = panel.style.height || "440px";
-            panelContent.style.display = "none";
-            panel.style.height = "48px";
-            panel.style.minHeight = "48px";
-            panel.style.resize = "none";
-            minimiseBtn.innerText = "+";
-            minimiseBtn.style.background = "rgba(255,255,255,0.3)";
-          }} else {{
-            panelContent.style.display = "block";
-            panel.style.height = originalHeight;
-            panel.style.minHeight = "200px";
-            panel.style.resize = "both";
-            minimiseBtn.innerText = "−";
-            minimiseBtn.style.background = "rgba(255,255,255,0.16)";
-          }}
-        }};
-
-        // Draggable functionality with boundaries
-        let dragging = false;
-        let offsetX = 0;
-        let offsetY = 0;
-        const dragHandle = document.getElementById("{panel_id}_drag");
-        dragHandle.addEventListener('mousedown', (event) => {{
-          dragging = true;
-          const rect = panel.getBoundingClientRect();
-          offsetX = event.clientX - rect.left;
-          offsetY = event.clientY - rect.top;
-          event.preventDefault();
-        }});
-        document.addEventListener('mousemove', (event) => {{
-          if (!dragging) return;
-          const wrapRect = shell.getBoundingClientRect();
-          const maxLeft = wrapRect.width - panel.offsetWidth - 12;
-          const maxTop = wrapRect.height - panel.offsetHeight - 12;
-          panel.style.left = `${{Math.min(Math.max(12, event.clientX - wrapRect.left - offsetX), maxLeft)}}px`;
-          panel.style.top = `${{Math.min(Math.max(12, event.clientY - wrapRect.top - offsetY), maxTop)}}px`;
-        }});
-        document.addEventListener('mouseup', () => {{
-          dragging = false;
-        }});
-
-        let attempts = 0;
-        const loader = window.setInterval(() => {{
-          attempts += 1;
-          if (window.TradingView) {{
-            window.clearInterval(loader);
-            mountWidget();
-          }} else if (attempts >= 40) {{
-            window.clearInterval(loader);
-            showError("TradingView failed to load.");
-          }}
-        }}, 250);
-      </script>
-    </div>
-    """
-    components.html(html, height=768)
         minimiseBtn.onclick = (e) => {{
           e.stopPropagation();
           isMinimised = !isMinimised;
