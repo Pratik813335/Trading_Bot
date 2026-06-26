@@ -1504,65 +1504,11 @@ def render_svg_chart(symbol, timeframe, bundle):
 
 
 def render_tradingview_widget(symbol, timeframe, bundle):
-    panel_payload = build_trade_panel_payload(bundle)
     tv_symbol = get_tradingview_symbol(symbol)
     tv_interval = get_tradingview_interval(timeframe)
     container_id = f"tv_chart_clean_{symbol}_{timeframe}".replace(":", "_")
     panel_id = f"tv_panel_clean_{symbol}_{timeframe}".replace(":", "_")
-    panel_json = json.dumps(panel_payload)
-
-    # Calculate countdown to next high-impact news
-    from datetime import datetime, timezone
-    news_countdown_text = ""
-    try:
-        forex_factory_feed = orchestrator.forex_factory_feed
-        if forex_factory_feed:
-            base = symbol[:3].upper()
-            quote = symbol[3:].upper() if len(symbol) >= 6 else ""
-            symbol_currencies = {base, quote} - {""}
-            
-            all_events = forex_factory_feed.fetch_events() or []
-            now_utc = datetime.now(timezone.utc)
-            
-            upcoming_high_events = []
-            for ev in all_events:
-                if ev.impact_level == "HIGH" and ev.currency in symbol_currencies:
-                    try:
-                        pub_time = datetime.fromisoformat(ev.publication_time.replace("Z", "+00:00"))
-                        if pub_time > now_utc:
-                            upcoming_high_events.append((pub_time, ev.event_name))
-                    except Exception:
-                        pass
-            
-            if upcoming_high_events:
-                upcoming_high_events.sort(key=lambda x: x[0])
-                next_high_news_time, next_high_news_name = upcoming_high_events[0]
-                
-                time_diff = next_high_news_time - now_utc
-                diff_seconds = time_diff.total_seconds()
-                diff_hours = int(diff_seconds // 3600)
-                diff_mins = int((diff_seconds % 3600) // 60)
-                
-                if diff_hours > 0:
-                    news_countdown_text = f"{next_high_news_name} in {diff_hours}h {diff_mins}m"
-                else:
-                    news_countdown_text = f"{next_high_news_name} in {diff_mins}m"
-    except Exception:
-        pass
-
-    if news_countdown_text:
-        countdown_badge_html = f"""
-        <div style="padding:10px 14px;background:#ef4444;color:#fff;font-weight:700;border-radius:999px;font-size:13px;box-shadow:0 4px 12px rgba(239,68,68,0.3);display:flex;align-items:center;gap:6px;font-family:Arial,sans-serif;">
-          <span style="width:8px;height:8px;border-radius:50%;background:#fff;display:inline-block;"></span>
-          <span>⚠️ {news_countdown_text}</span>
-        </div>
-        """
-    else:
-        countdown_badge_html = """
-        <div style="padding:10px 14px;background:#22c55e;color:#fff;font-weight:700;border-radius:999px;font-size:13px;box-shadow:0 4px 12px rgba(34,197,94,0.2);display:flex;align-items:center;gap:6px;font-family:Arial,sans-serif;">
-          <span>🟢 News Clear</span>
-        </div>
-        """
+    session_id = st.session_state.session_uuid
 
     html = f"""
     <div id="{container_id}_shell" style="height:760px;width:100%;position:relative;border:1px solid rgba(148,163,184,0.35);border-radius:22px;overflow:hidden;background:#ffffff;">
@@ -1584,82 +1530,40 @@ def render_tradingview_widget(symbol, timeframe, bundle):
         }}
       </style>
       <div style="position:absolute;top:14px;right:14px;z-index:8;display:flex;gap:10px;align-items:center;">
-        {countdown_badge_html}
+        <div id="news_badge_container">
+          <div style="padding:10px 14px;background:#22c55e;color:#fff;font-weight:700;border-radius:999px;font-size:13px;box-shadow:0 4px 12px rgba(34,197,94,0.2);display:flex;align-items:center;gap:6px;font-family:Arial,sans-serif;">
+            <span>🟢 News Clear</span>
+          </div>
+        </div>
         <button type="button" id="{container_id}_fullscreen" style="border:none;border-radius:999px;padding:10px 14px;background:rgba(15,23,42,0.88);color:#fff;font-weight:700;cursor:pointer;">Fullscreen</button>
       </div>
       <div id="{panel_id}" style="position:absolute;top:18px;left:18px;width:340px;height:440px;min-width:260px;min-height:200px;resize:both;overflow:auto;z-index:9;border-radius:24px;background:linear-gradient(180deg, rgba(15,23,42,0.86), rgba(30,41,59,0.82));color:#f8fafc;border:1px solid rgba(148,163,184,0.28);box-shadow:0 25px 50px rgba(15,23,42,0.35);font-family:Arial,sans-serif;backdrop-filter:blur(10px);"></div>
       <div id="{container_id}" style="height:100%;width:100%;"></div>
       <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
       <script type="text/javascript">
-        const panelPayload = {panel_json};
         const shell = document.getElementById("{container_id}_shell");
         const chartNode = document.getElementById("{container_id}");
         const panel = document.getElementById("{panel_id}");
         const fullscreenButton = document.getElementById("{container_id}_fullscreen");
 
-        let statusColor = "#22c55e";
-        let signalBg = "rgba(34, 197, 94, 0.25)";
-        let headerGradient = "linear-gradient(135deg, rgba(20,184,166,0.55), rgba(37,99,235,0.42))";
-
-        if (panelPayload.signal === "TRADE_REMOVED") {{
-          statusColor = "#ef4444";
-          signalBg = "rgba(239, 68, 68, 0.35)";
-          headerGradient = "linear-gradient(135deg, rgba(239, 68, 68, 0.6), rgba(220, 38, 38, 0.5))";
-        }} else if (panelPayload.signal.includes("BUY")) {{
-          statusColor = "#22c55e";
-          signalBg = "rgba(34, 197, 94, 0.35)";
-          headerGradient = "linear-gradient(135deg, rgba(16, 185, 129, 0.6), rgba(5, 150, 105, 0.5))";
-        }} else if (panelPayload.signal.includes("SELL")) {{
-          statusColor = "#f97316";
-          signalBg = "rgba(249, 115, 22, 0.35)";
-          headerGradient = "linear-gradient(135deg, rgba(249, 115, 22, 0.6), rgba(234, 88, 12, 0.5))";
-        }} else {{
-          statusColor = "#94a3b8";
-          signalBg = "rgba(148, 163, 184, 0.25)";
-          headerGradient = "linear-gradient(135deg, rgba(100, 116, 139, 0.55), rgba(71, 85, 105, 0.42))";
-        }}
+        let statusColor = "#94a3b8";
+        let signalBg = "rgba(148, 163, 184, 0.25)";
+        let headerGradient = "linear-gradient(135deg, rgba(100, 116, 139, 0.55), rgba(71, 85, 105, 0.42))";
 
         panel.innerHTML = `
-          <div id="{panel_id}_drag" style="padding:12px 16px;background:${{headerGradient}};font-size:16px;font-weight:700;position:sticky;top:0;display:flex;justify-content:space-between;align-items:center;cursor:move;user-select:none;border-top-left-radius:24px;border-top-right-radius:24px;">
+          <div id="{panel_id}_drag" style="padding:12px 16px;background:\${{headerGradient}};font-size:16px;font-weight:700;position:sticky;top:0;display:flex;justify-content:space-between;align-items:center;cursor:move;user-select:none;border-top-left-radius:24px;border-top-right-radius:24px;">
             <span style="display:flex;align-items:center;gap:6px;">
-              <span style="width:8px;height:8px;border-radius:50%;background:${{statusColor}};display:inline-block;box-shadow:0 0 8px ${{statusColor}};"></span>
+              <span style="width:8px;height:8px;border-radius:50%;background:\${{statusColor}};display:inline-block;box-shadow:0 0 8px \${{statusColor}};"></span>
               Trading Panel
             </span>
-            <div style="display:flex;gap:6px;align-items:center;">
-              <button type="button" id="{panel_id}_refresh" style="border:none;background:rgba(255,255,255,0.16);color:#fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;transition:background 0.2s;" title="Refresh Panel">🔄</button>
-              <button type="button" id="{panel_id}_minimise" style="border:none;background:rgba(255,255,255,0.16);color:#fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-weight:700;font-size:14px;transition:background 0.2s;">−</button>
-            </div>
           </div>
           <div id="{panel_id}_content" style="padding:16px;">
-            <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
-              <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:${{signalBg}};">${{panelPayload.signal}}</span>
-              <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{panelPayload.confidence}}</span>
-              <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{panelPayload.status}}</span>
-            </div>
-            <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:14px;">
-              <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Symbol</div><div style="font-size:15px;font-weight:700;">${{panelPayload.symbol}}</div></div>
-              <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Timeframe</div><div style="font-size:15px;font-weight:700;">${{panelPayload.timeframe}}</div></div>
-              <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Entry</div><div style="font-size:15px;font-weight:700;">${{panelPayload.entry}}</div></div>
-              <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Stop Loss</div><div style="font-size:15px;font-weight:700;">${{panelPayload.stop_loss}}</div></div>
-              <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 1</div><div style="font-size:15px;font-weight:700;">${{panelPayload.tp1}}</div></div>
-              <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 2</div><div style="font-size:15px;font-weight:700;">${{panelPayload.tp2}}</div></div>
-            </div>
-            <div style="display:grid;gap:8px;">
-              <div style="padding:10px 12px;border-radius:16px;background:rgba(37,99,235,0.16);border:1px solid rgba(96,165,250,0.35);">
-                <div style="font-size:11px;color:#bfdbfe;margin-bottom:4px;">Candle Pattern</div>
-                <div style="font-size:14px;font-weight:700;color:#eff6ff;">${{panelPayload.pattern}}</div>
-              </div>
-              <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);">
-                <div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Structure</div>
-                <div style="font-size:13px;font-weight:700;">Trend: ${{panelPayload.trend}}</div>
-                <div style="font-size:13px;font-weight:700;">Phase: ${{panelPayload.phase}}</div>
-                <div style="font-size:13px;font-weight:700;">BOS / CHOCH: ${{panelPayload.bos}} / ${{panelPayload.choch}}</div>
-              </div>
-            </div>
-          </div>`;
+            <div style="color:#cbd5e1;font-size:14px;font-weight:600;">Connecting to Live Analysis Engine...</div>
+          </div>
+        `;
 
         const showError = (message) => {{
-          chartNode.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#64748b;font:600 15px Arial,sans-serif;">${{message}}</div>`;
+          chartNode.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#64748b;font:600 15px Arial,sans-serif;">\${{message}}</div>`;
         }};
 
         const updatePanelContent = (data) => {{
@@ -1692,36 +1596,55 @@ def render_tradingview_widget(symbol, timeframe, bundle):
           const statusDot = dragHeader ? dragHeader.querySelector('span > span') : null;
           if (statusDot) {{
             statusDot.style.background = statusColor;
-            statusDot.style.boxShadow = `0 0 8px ${{statusColor}}`;
+            statusDot.style.boxShadow = `0 0 8px \${{statusColor}}`;
           }}
 
           const contentDiv = document.getElementById("{panel_id}_content");
           if (contentDiv) {{
             contentDiv.innerHTML = `
               <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
-                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:${{signalBg}};">${{data.signal}}</span>
-                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{data.confidence}}</span>
-                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">${{data.status}}</span>
+                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:\${{signalBg}};">\${{data.signal}}</span>
+                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">\${{data.confidence}}</span>
+                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">\${{data.status}}</span>
               </div>
               <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:14px;">
-                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Symbol</div><div style="font-size:15px;font-weight:700;">${{data.symbol}}</div></div>
-                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Timeframe</div><div style="font-size:15px;font-weight:700;">${{data.timeframe}}</div></div>
-                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Entry</div><div style="font-size:15px;font-weight:700;">${{data.entry}}</div></div>
-                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Stop Loss</div><div style="font-size:15px;font-weight:700;">${{data.stop_loss}}</div></div>
-                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 1</div><div style="font-size:15px;font-weight:700;">${{data.tp1}}</div></div>
-                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 2</div><div style="font-size:15px;font-weight:700;">${{data.tp2}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Symbol</div><div style="font-size:15px;font-weight:700;">\${{data.symbol}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Timeframe</div><div style="font-size:15px;font-weight:700;">\${{data.timeframe}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Entry</div><div style="font-size:15px;font-weight:700;">\${{data.entry}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Stop Loss</div><div style="font-size:15px;font-weight:700;">\${{data.stop_loss}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 1</div><div style="font-size:15px;font-weight:700;">\${{data.tp1}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 2</div><div style="font-size:15px;font-weight:700;">\${{data.tp2}}</div></div>
               </div>
               <div style="display:grid;gap:8px;">
                 <div style="padding:10px 12px;border-radius:16px;background:rgba(37,99,235,0.16);border:1px solid rgba(96,165,250,0.35);">
                   <div style="font-size:11px;color:#bfdbfe;margin-bottom:4px;">Candle Pattern</div>
-                  <div style="font-size:14px;font-weight:700;color:#eff6ff;">${{data.pattern}}</div>
+                  <div style="font-size:14px;font-weight:700;color:#eff6ff;">\${{data.pattern}}</div>
                 </div>
                 <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);">
                   <div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Structure</div>
-                  <div style="font-size:13px;font-weight:700;">Trend: ${{data.trend}}</div>
-                  <div style="font-size:13px;font-weight:700;">Phase: ${{data.phase}}</div>
-                  <div style="font-size:13px;font-weight:700;">BOS / CHOCH: ${{data.bos}} / ${{data.choch}}</div>
+                  <div style="font-size:13px;font-weight:700;">Trend: \${{data.trend}}</div>
+                  <div style="font-size:13px;font-weight:700;">Phase: \${{data.phase}}</div>
+                  <div style="font-size:13px;font-weight:700;">BOS / CHOCH: \${{data.bos}} / \${{data.choch}}</div>
                 </div>
+              </div>
+            `;
+          }}
+        }};
+
+        const updateNewsBadge = (newsText) => {{
+          const badgeContainer = document.getElementById("news_badge_container");
+          if (!badgeContainer) return;
+          if (newsText) {{
+            badgeContainer.innerHTML = `
+              <div style="padding:10px 14px;background:#ef4444;color:#fff;font-weight:700;border-radius:999px;font-size:13px;box-shadow:0 4px 12px rgba(239,68,68,0.3);display:flex;align-items:center;gap:6px;font-family:Arial,sans-serif;">
+                <span style="width:8px;height:8px;border-radius:50%;background:#fff;display:inline-block;"></span>
+                <span>⚠️ \${{newsText}}</span>
+              </div>
+            `;
+          }} else {{
+            badgeContainer.innerHTML = `
+              <div style="padding:10px 14px;background:#22c55e;color:#fff;font-weight:700;border-radius:999px;font-size:13px;box-shadow:0 4px 12px rgba(34,197,94,0.2);display:flex;align-items:center;gap:6px;font-family:Arial,sans-serif;">
+                <span>🟢 News Clear</span>
               </div>
             `;
           }}
@@ -1757,40 +1680,39 @@ def render_tradingview_widget(symbol, timeframe, bundle):
         fullscreenButton.onclick = () => {{
           if (!document.fullscreenElement) {{
             shell.requestFullscreen();
-          }} else {{
+          } else {{
             document.exitFullscreen();
           }}
         }};
 
-        const triggerLocalRefresh = () => {{
-          const refreshBtn = document.getElementById("{panel_id}_refresh");
-          if (refreshBtn) {{
-            refreshBtn.classList.add('spinning');
-            refreshBtn.disabled = true;
-          }}
+        // Connect WebSocket client
+        const connectWs = () => {{
+          const wsUrl = `ws://127.0.0.1:8505/ws?symbol=\${{encodeURIComponent("{symbol}")}}&timeframe=\${{encodeURIComponent("{timeframe}")}}&session_id=\${{encodeURIComponent("{session_id}")}}`;
+          const socket = new WebSocket(wsUrl);
 
-          fetch(`http://127.0.0.1:8505/refresh?symbol=${{encodeURIComponent(panelPayload.symbol)}}&timeframe=${{encodeURIComponent(panelPayload.timeframe)}}`)
-            .then(res => res.json())
-            .then(data => {{
-              if (data && !data.error) {{
-                updatePanelContent(data);
-              }} else {{
-                console.error("Refresh error:", data ? data.error : "empty response");
+          socket.onmessage = function(event) {{
+            try {{
+              const data = JSON.parse(event.data);
+              if (data && data.panelPayload) {{
+                updatePanelContent(data.panelPayload);
+                updateNewsBadge(data.newsCountdown);
               }}
-            }})
-            .catch(err => {{
-              console.error("Fetch failed:", err);
-            }})
-            .finally(() => {{
-              if (refreshBtn) {{
-                refreshBtn.classList.remove('spinning');
-                refreshBtn.disabled = false;
-              }}
-            }});
+            }} catch (e) {{
+              console.error("Error parsing ws update:", e);
+            }}
+          }};
+
+          socket.onclose = function() {{
+            console.log("WebSocket closed, retrying in 2 seconds...");
+            setTimeout(connectWs, 2000);
+          }};
+
+          socket.onerror = function() {{
+            socket.close();
+          }};
         }};
 
-        document.getElementById("{panel_id}_refresh").onclick = triggerLocalRefresh;
-        window.setInterval(triggerLocalRefresh, 5000);
+        connectWs();
 
         // Minimise functionality
         const minimiseBtn = document.getElementById("{panel_id}_minimise");
@@ -1798,6 +1720,66 @@ def render_tradingview_widget(symbol, timeframe, bundle):
         let isMinimised = false;
         let originalHeight = "440px";
 
+        minimiseBtn.onclick = (e) => {{
+          e.stopPropagation();
+          isMinimised = !isMinimised;
+          if (isMinimised) {{
+            originalHeight = panel.style.height || "440px";
+            panelContent.style.display = "none";
+            panel.style.height = "48px";
+            panel.style.minHeight = "48px";
+            panel.style.resize = "none";
+            minimiseBtn.innerText = "+";
+            minimiseBtn.style.background = "rgba(255,255,255,0.3)";
+          }} else {{
+            panelContent.style.display = "block";
+            panel.style.height = originalHeight;
+            panel.style.minHeight = "200px";
+            panel.style.resize = "both";
+            minimiseBtn.innerText = "−";
+            minimiseBtn.style.background = "rgba(255,255,255,0.16)";
+          }}
+        }};
+
+        // Draggable functionality with boundaries
+        let dragging = false;
+        let offsetX = 0;
+        let offsetY = 0;
+        const dragHandle = document.getElementById("{panel_id}_drag");
+        dragHandle.addEventListener('mousedown', (event) => {{
+          dragging = true;
+          const rect = panel.getBoundingClientRect();
+          offsetX = event.clientX - rect.left;
+          offsetY = event.clientY - rect.top;
+          event.preventDefault();
+        }});
+        document.addEventListener('mousemove', (event) => {{
+          if (!dragging) return;
+          const wrapRect = shell.getBoundingClientRect();
+          const maxLeft = wrapRect.width - panel.offsetWidth - 12;
+          const maxTop = wrapRect.height - panel.offsetHeight - 12;
+          panel.style.left = `${{Math.min(Math.max(12, event.clientX - wrapRect.left - offsetX), maxLeft)}}px`;
+          panel.style.top = `${{Math.min(Math.max(12, event.clientY - wrapRect.top - offsetY), maxTop)}}px`;
+        }});
+        document.addEventListener('mouseup', () => {{
+          dragging = false;
+        }});
+
+        let attempts = 0;
+        const loader = window.setInterval(() => {{
+          attempts += 1;
+          if (window.TradingView) {{
+            window.clearInterval(loader);
+            mountWidget();
+          }} else if (attempts >= 40) {{
+            window.clearInterval(loader);
+            showError("TradingView failed to load.");
+          }}
+        }}, 250);
+      </script>
+    </div>
+    """
+    components.html(html, height=768)
         minimiseBtn.onclick = (e) => {{
           e.stopPropagation();
           isMinimised = !isMinimised;
@@ -2102,27 +2084,13 @@ class PanelApiHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
+from backend.live_analysis_engine import start_engine_api_server, live_analysis_manager
+
 @st.cache_resource
 def start_panel_api_server():
-    global _global_orchestrator
     container = _get_container_v2()
-    _global_orchestrator = container["analysis_orchestrator"]
-    
-    def run_server():
-        port = 8505
-        server_address = ('127.0.0.1', port)
-        class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-            allow_reuse_address = True
-        
-        try:
-            httpd = ThreadedTCPServer(server_address, PanelApiHandler)
-            httpd.serve_forever()
-        except Exception as e:
-            pass
-            
-    t = threading.Thread(target=run_server, daemon=True)
-    t.start()
-    return t
+    orch = container["analysis_orchestrator"]
+    return start_engine_api_server(orch)
 
 @st.cache_resource
 def _get_container_v2():
@@ -2292,101 +2260,75 @@ if settings_changed:
     st.session_state.force_analyze = True
     st.session_state.update_trigger_reason = "Settings Changed"
 
-# 2. Check reanalysis criteria or force run
-should_run = False
-trigger_reason = "n/a"
+# 2. Perform live or manual analysis
+from datetime import timezone
 
-if st.session_state.analysis_bundle is None or st.session_state.force_analyze:
-    should_run = True
-    trigger_reason = st.session_state.get("update_trigger_reason", "Initial Run")
-elif st.session_state.live_mode:
-    t_mode = st.session_state.get("trigger_mode", "Hybrid (Smart Triggers)")
+if st.session_state.live_mode:
+    # Render the custom websocket listener component to trigger script rerun on websocket pushes
+    import os
+    import streamlit.components.v1 as components
     
-    if t_mode == "Time-Based Only":
-        if st.session_state.last_analysis_time_dt is not None:
-            from datetime import datetime, timezone
-            elapsed = (datetime.now(timezone.utc) - st.session_state.last_analysis_time_dt).total_seconds()
-            if elapsed >= st.session_state.refresh_sec:
-                should_run = True
-                trigger_reason = f"Timer elapsed ({st.session_state.refresh_sec}s)"
-    elif t_mode == "Candle-Close Only":
-        try:
-            m_frame = orchestrator.market_feed.fetch(symbol, timeframe, force_refresh=True)
-            if m_frame is not None and not m_frame.candles.empty:
-                last_row = m_frame.candles.iloc[-1]
-                curr_candle_time = last_row.name.isoformat() if isinstance(last_row.name, pd.Timestamp) else str(last_row.name)
-                if st.session_state.last_candle_time is not None and curr_candle_time != st.session_state.last_candle_time:
-                    should_run = True
-                    trigger_reason = "New candle formed"
-        except Exception as e:
-            trigger_reason = f"Feed error: {e}"
+    WS_LISTENER_PATH = os.path.join(os.path.dirname(__file__), "backend", "ws_listener")
+    ws_listener_component = components.declare_component("ws_listener", path=WS_LISTENER_PATH)
+    
+    # Render component silently (0 height)
+    last_update_ts = ws_listener_component(
+        symbol=symbol,
+        timeframe=timeframe,
+        session_id=st.session_state.session_uuid,
+        key="ws_listener_instance"
+    )
+    
+    # If a new websocket update was triggered
+    if last_update_ts and last_update_ts != st.session_state.get("last_ws_update_ts"):
+        st.session_state.last_ws_update_ts = last_update_ts
+        st.session_state.update_trigger_reason = "WebSocket Push"
+        st.session_state.last_analysis_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        st.session_state.last_analysis_time_dt = datetime.now(timezone.utc)
+    
+    # Retrieve the latest bundle from the backend manager
+    bundle = live_analysis_manager.get_latest_analysis(symbol, timeframe)
+    
+    # Initial run fallback: if no bundle is generated yet, run it synchronously so user doesn't wait
+    if bundle is None:
+        with st.spinner("⏳ Starting backend Live Engine and performing initial analysis..."):
+            try:
+                bundle = orchestrator.analyze(symbol, timeframe, forced_strategy=selected_strategy if selected_strategy != "Auto (Session-Aware)" else None, force_refresh=True)
+                if bundle is not None:
+                    orchestrator.log_signal(bundle)
+                    live_analysis_manager.set_latest_analysis(symbol, timeframe, bundle)
+            except Exception as e:
+                st.session_state.analysis_status = "ERROR"
+                st.session_state.update_trigger_reason = f"Initial Run Error: {e}"
+                
+    if bundle is not None:
+        st.session_state.analysis_bundle = bundle
+        last_row = bundle.candles.iloc[-1]
+        st.session_state.last_price = float(last_row["close"])
+        st.session_state.last_candle_time = last_row.name.isoformat() if isinstance(last_row.name, pd.Timestamp) else str(last_row.name)
+        st.session_state.analysis_status = "LIVE"
     else:
-        # Default is Hybrid (Smart Triggers)
-        forced = None if selected_strategy == "Auto (Session-Aware)" else selected_strategy
-        should_run, trigger_reason = check_reanalysis_triggers(symbol, timeframe, forced)
-
-# ── Check and harvest completed background analysis ──
-session_uuid = st.session_state.session_uuid
-if session_uuid in _BACKGROUND_ANALYSIS_RESULTS:
-    res = _BACKGROUND_ANALYSIS_RESULTS.pop(session_uuid)
-    for k, v in res.items():
-        st.session_state[k] = v
-
-# 3. Perform analysis if triggered
-if should_run and not st.session_state.is_analyzing:
-    st.session_state.is_analyzing = True
-    
-    is_silent = not st.session_state.get("force_analyze", False) and st.session_state.analysis_bundle is not None
-    
-    if not is_silent:
-        st.session_state.analysis_status = "ANALYZING"
-        st.session_state.update_trigger_reason = trigger_reason
-    else:
-        st.session_state.update_trigger_reason = trigger_reason
+        st.session_state.analysis_status = "ERROR"
         
-    st.session_state.force_analyze = False
-    
-    forced = None if selected_strategy == "Auto (Session-Aware)" else selected_strategy
-    orchestrator.forced_strategy = forced
-    if _global_orchestrator:
-        _global_orchestrator.forced_strategy = forced
-        
-    if not is_silent:
-        # On first run or manual force analysis, do a synchronous analysis so user doesn't see a blank/empty dashboard
+else:
+    # Non-live mode (standard manual analysis)
+    if st.session_state.analysis_bundle is None or st.session_state.force_analyze:
+        st.session_state.force_analyze = False
         with st.spinner("⏳ Analyzing market structure and executing rule checks..."):
             try:
-                bundle = orchestrator.analyze(symbol, timeframe, forced_strategy=forced, force_refresh=True)
+                bundle = orchestrator.analyze(symbol, timeframe, forced_strategy=selected_strategy if selected_strategy != "Auto (Session-Aware)" else None, force_refresh=True)
                 if bundle is not None:
                     st.session_state.analysis_bundle = bundle
-                    st.session_state.analysis_symbol = symbol
-                    st.session_state.analysis_timeframe = timeframe
                     orchestrator.log_signal(bundle)
-                    
-                    # Update trackers
-                    from datetime import datetime, timezone
                     st.session_state.last_analysis_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     st.session_state.last_analysis_time_dt = datetime.now(timezone.utc)
-                    
                     last_row = bundle.candles.iloc[-1]
                     st.session_state.last_price = float(last_row["close"])
                     st.session_state.last_candle_time = last_row.name.isoformat() if isinstance(last_row.name, pd.Timestamp) else str(last_row.name)
-                    st.session_state.analysis_status = "LIVE" if st.session_state.live_mode else "IDLE"
-                else:
-                    st.session_state.analysis_status = "ERROR"
-                    st.session_state.update_trigger_reason = "Failed to fetch/analyze data"
+                    st.session_state.analysis_status = "IDLE"
             except Exception as e:
                 st.session_state.analysis_status = "ERROR"
                 st.session_state.update_trigger_reason = f"Error: {e}"
-            finally:
-                st.session_state.is_analyzing = False
-    else:
-        # Run in a background thread to prevent UI freezing and screen blurring/flickering
-        t = threading.Thread(
-            target=run_analysis_in_background,
-            args=(session_uuid, symbol, timeframe, forced, st.session_state.live_mode),
-            daemon=True
-        )
-        t.start()
 
 bundle = st.session_state.analysis_bundle
 

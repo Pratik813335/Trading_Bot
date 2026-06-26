@@ -67,6 +67,7 @@ class QuoteSnapshot:
     ask: float
     timestamp: datetime
     provider: str
+    spread: float = 0.0
 
 
 @dataclass
@@ -480,6 +481,27 @@ class MT5Provider:
         return ["XAUUSD", "EURUSD", "GBPUSD", "AUDUSD", "USDJPY", "USDCHF", "USDCAD"]
 
     def get_quote(self, symbol: str) -> QuoteSnapshot | None:
+        from mt5_data import initialize_mt5, find_mt5_symbol
+        import MetaTrader5 as mt5
+        try:
+            initialize_mt5()
+            matched_symbol = find_mt5_symbol(symbol)
+            tick = mt5.symbol_info_tick(matched_symbol)
+            if tick is not None:
+                bid = float(tick.bid)
+                ask = float(tick.ask)
+                spread = ask - bid
+                return QuoteSnapshot(
+                    symbol=symbol,
+                    bid=bid,
+                    ask=ask,
+                    timestamp=datetime.fromtimestamp(tick.time, tz=timezone.utc),
+                    provider=self.provider_name,
+                    spread=spread
+                )
+        except Exception as e:
+            print(f"MT5 get_quote error: {e}")
+
         frame = self.get_candles(symbol, "5")
         if frame is None or frame.candles.empty:
             return None
@@ -491,6 +513,7 @@ class MT5Provider:
             ask=price,
             timestamp=last["timestamp"].to_pydatetime(),
             provider=self.provider_name,
+            spread=0.0
         )
 
     def get_candles(self, symbol: str, timeframe: str) -> MarketFrame | None:
@@ -529,6 +552,19 @@ class MT5Provider:
             return None
 
 
+def get_simulated_spread(symbol: str) -> float:
+    return {
+        "XAUUSD": 0.25,
+        "EURUSD": 0.00012,
+        "GBPUSD": 0.00015,
+        "AUDUSD": 0.00014,
+        "USDJPY": 0.015,
+        "USDCHF": 0.00015,
+        "USDCAD": 0.00016,
+        "BTCUSD": 15.0
+    }.get(symbol.upper(), 0.0001)
+
+
 class UnifiedMarketFeed:
     def __init__(self, providers: list[MarketProvider], cache: InMemoryTTLCache):
         self.providers = providers
@@ -551,6 +587,18 @@ class UnifiedMarketFeed:
                 frame = None
             if frame is not None:
                 frame.metadata.cache_status = "fresh"
+                # Enrich with quote snapshot
+                try:
+                    quote = provider.get_quote(symbol)
+                    if quote is not None:
+                        # If spread is zero or invalid, simulate a realistic spread
+                        if quote.bid == quote.ask or quote.spread <= 0.0:
+                            sim_spread = get_simulated_spread(symbol)
+                            quote.spread = sim_spread
+                            quote.ask = quote.bid + sim_spread
+                        frame.quote = quote
+                except Exception:
+                    pass
                 self.cache.set(cache_key, frame)
                 return frame
         return None

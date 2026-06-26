@@ -337,7 +337,7 @@ class AnalysisOrchestrator:
                 if tf == timeframe:
                     tf_market_frame = market_frame
                 else:
-                    tf_market_frame = self.market_feed.fetch(symbol, tf)
+                    tf_market_frame = self.market_feed.fetch(symbol, tf, force_refresh=force_refresh)
                 
                 if tf_market_frame is not None and not tf_market_frame.candles.empty:
                     tf_candles, tf_indicators = self.indicator_engine.enrich(tf_market_frame.candles)
