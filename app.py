@@ -64,17 +64,39 @@ def inject_styles():
     st.markdown(
         """
         <style>
-        /* Keep elements 100% opaque during reruns to avoid screen blurring/flashing */
-        [data-testid="stAppViewBlockContainer"], 
-        .element-container, 
-        div[data-testid="stBlock"], 
-        div[data-testid="stHorizontalBlock"], 
-        div[data-testid="stVerticalBlock"], 
-        div[data-testid="stTab"], 
+        /* ── Anti-flicker: suppress ALL Streamlit rerun visual artifacts ── */
+        /* Hide the running progress bar and status widget */
+        [data-testid="stStatusWidget"],
+        [data-testid="stDecoration"],
+        [data-testid="stAppRunningStatusBar"],
+        div[class*="StatusWidget"],
+        div[class*="stProgress"] { display: none !important; }
+
+        /* Force full opacity on every element at all times */
+        .stApp, .stApp *,
+        [data-testid="stMain"], [data-testid="stMain"] *,
+        [data-testid="stAppViewBlockContainer"],
+        [data-testid="stAppViewBlockContainer"] *,
+        .element-container, .element-container *,
+        div[data-testid="stBlock"],
+        div[data-testid="stHorizontalBlock"],
+        div[data-testid="stVerticalBlock"],
+        div[data-testid="stTab"],
         [data-baseweb="tab-panel"] {
             opacity: 1 !important;
+            visibility: visible !important;
             transition: none !important;
+            animation-duration: 0s !important;
         }
+
+        /* Kill any Streamlit shimmer/skeleton loading overlays */
+        [data-stale], [aria-busy="true"] { opacity: 1 !important; }
+        .stSkeleton { display: none !important; }
+
+        /* Prevent iframe containers from flashing */
+        [data-testid="stCustomComponentV1"],
+        [data-testid="stIFrame"],
+        iframe { opacity: 1 !important; transition: none !important; }
 
         .stApp {
             background:
@@ -336,11 +358,29 @@ def build_trade_panel_payload(bundle):
             status = "Blocked / Feed Mismatch" if has_mismatch else "Blocked / No Trade"
         
     reasons = [r for r in (bundle.signal.reasons or []) if not r.startswith("Gemini:")]
+
+    # MTF alignment
+    align_count = 0
+    total_tf_count = 0
+    signal_val = bundle.signal.signal
+    primary_dir = "BUY" if "BUY" in signal_val else ("SELL" if "SELL" in signal_val else None)
+    if primary_dir and hasattr(bundle, "mtf_analysis") and bundle.mtf_analysis:
+        for tf, tf_data in bundle.mtf_analysis.items():
+            if tf in ["5", "15", "60", "240", "D"]:
+                total_tf_count += 1
+                trend = tf_data.get("trend")
+                if primary_dir == "BUY" and trend == "bullish":
+                    align_count += 1
+                elif primary_dir == "SELL" and trend == "bearish":
+                    align_count += 1
+
+    from datetime import datetime as _dt
     return {
         "symbol": bundle.signal.symbol,
         "timeframe": bundle.signal.timeframe,
         "signal": bundle.signal.signal,
         "confidence": f"{bundle.signal.confidence:.2f}%" if bundle.signal.confidence is not None else "--",
+        "confidence_raw": float(bundle.signal.confidence) if bundle.signal.confidence is not None else 0.0,
         "status": status,
         "entry": format_price(bundle.signal.entry) if show_levels else "--",
         "stop_loss": format_price(bundle.signal.stop_loss) if show_levels else "--",
@@ -356,6 +396,10 @@ def build_trade_panel_payload(bundle):
         "sync": f"{bundle.sync.match_percentage}%" if bundle.sync else "100%",
         "actionable": actionable,
         "reasons": reasons,
+        "mtf_alignment": f"{align_count}/{total_tf_count}" if total_tf_count > 0 else "--",
+        "mtf_aligned": align_count >= 4,
+        "feed_source": bundle.signal.feed_source or "--",
+        "last_update": _dt.now().strftime("%H:%M:%S"),
     }
 
 
@@ -1153,7 +1197,7 @@ def render_lightweight_chart(symbol, timeframe, bundle):
         }});
         resizeObserver.observe(wrapper);
 
-        const refreshIntervalMs = 5000;
+        const refreshIntervalMs = 1000;
         window.setInterval(triggerLocalRefresh, refreshIntervalMs);
         chart.timeScale().fitContent();
         setTimeout(updateOverlay, 300);
@@ -1495,7 +1539,7 @@ def render_svg_chart(symbol, timeframe, bundle):
           dragging = false;
         }});
 
-        window.setInterval(triggerLocalRefresh, 5000);
+        window.setInterval(triggerLocalRefresh, 1000);
         renderSvgChart();
       </script>
     </div>
@@ -1504,6 +1548,14 @@ def render_svg_chart(symbol, timeframe, bundle):
 
 
 def render_tradingview_widget(symbol, timeframe, bundle):
+    import time as _time_mod
+    _tv_key = f"_tv_html_{symbol}_{timeframe}"
+    _tv_ts_key = f"_tv_ts_{symbol}_{timeframe}"
+    _html_age = _time_mod.time() - st.session_state.get(_tv_ts_key, 0)
+    if _tv_key in st.session_state and _html_age <= 300:
+        components.html(st.session_state[_tv_key], height=768)
+        return
+
     panel_payload = build_trade_panel_payload(bundle)
     tv_symbol = get_tradingview_symbol(symbol)
     tv_interval = get_tradingview_interval(timeframe)
@@ -1790,7 +1842,7 @@ def render_tradingview_widget(symbol, timeframe, bundle):
         }};
 
         document.getElementById("{panel_id}_refresh").onclick = triggerLocalRefresh;
-        window.setInterval(triggerLocalRefresh, 5000);
+        window.setInterval(triggerLocalRefresh, 1000);
 
         // Minimise functionality
         const minimiseBtn = document.getElementById("{panel_id}_minimise");
@@ -1857,6 +1909,8 @@ def render_tradingview_widget(symbol, timeframe, bundle):
       </script>
     </div>
     """
+    st.session_state[_tv_key] = html
+    st.session_state[_tv_ts_key] = _time_mod.time()
     components.html(html, height=768)
 
 
@@ -1973,6 +2027,125 @@ def build_structure_tables(bundle):
     return pd.DataFrame(swing_rows), pd.DataFrame(imbalance_rows)
 
 
+def render_live_metrics_js(symbol, timeframe):
+    """Pure JS live dashboard — polls /refresh every 1s and updates DOM in-place.
+    Zero Streamlit rerun involvement = zero screen flicker."""
+    uid = f"{symbol}_{timeframe}".replace(":", "_")
+    html = f"""
+    <style>
+      #ld_{uid} {{ font-family: Arial, sans-serif; user-select: none; }}
+      .ld-status {{ display:flex; align-items:center; gap:12px; padding:12px 16px;
+          background:rgba(255,255,255,0.95); border:1px solid rgba(148,163,184,0.25);
+          border-radius:18px; box-shadow:0 8px 24px rgba(15,23,42,0.06);
+          margin-bottom:10px; flex-wrap:wrap; }}
+      .ld-badge {{ display:inline-flex; align-items:center; gap:5px; padding:5px 12px;
+          border-radius:999px; font-size:12px; font-weight:700; white-space:nowrap; }}
+      .ld-dot {{ width:7px; height:7px; border-radius:50%; display:inline-block; }}
+      .ld-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+          gap:8px; margin-bottom:10px; }}
+      .ld-card {{ border-radius:16px; padding:10px 12px;
+          background:linear-gradient(180deg,rgba(255,255,255,0.98),rgba(241,245,249,0.92));
+          border:1px solid rgba(148,163,184,0.22); }}
+      .ld-label {{ font-size:11px; letter-spacing:.04em; text-transform:uppercase;
+          color:#64748b; margin-bottom:4px; }}
+      .ld-val {{ font-size:15px; font-weight:700; color:#0f172a; }}
+      .ld-conf-bar {{ background:rgba(148,163,184,0.18); border-radius:999px; height:7px;
+          overflow:hidden; margin:5px 0 3px; }}
+      .ld-conf-fill {{ height:100%; border-radius:999px;
+          transition:width 0.4s cubic-bezier(.4,0,.2,1); }}
+    </style>
+    <div id="ld_{uid}">
+      <div class="ld-status" id="ld_status_{uid}">
+        <span class="ld-badge" id="ld_live_{uid}" style="background:rgba(100,116,139,0.12);color:#64748b;">
+          <span class="ld-dot" style="background:#64748b;"></span>LOADING
+        </span>
+        <span style="font-size:13px;font-weight:700;color:#0f172a;" id="ld_sig_{uid}">—</span>
+        <span style="font-size:13px;color:#475569;" id="ld_sym_{uid}">{symbol} · {timeframe}m</span>
+        <span style="margin-left:auto;font-size:12px;color:#94a3b8;" id="ld_ts_{uid}">--:--:--</span>
+      </div>
+      <div class="ld-grid" id="ld_grid_{uid}">
+        <div class="ld-card"><div class="ld-label">Confidence</div>
+          <div class="ld-conf-bar"><div class="ld-conf-fill" id="ld_cfill_{uid}" style="width:0%;background:#94a3b8;"></div></div>
+          <div class="ld-val" id="ld_cval_{uid}">--</div></div>
+        <div class="ld-card"><div class="ld-label">Trend</div><div class="ld-val" id="ld_trend_{uid}">--</div></div>
+        <div class="ld-card"><div class="ld-label">Phase</div><div class="ld-val" id="ld_phase_{uid}">--</div></div>
+        <div class="ld-card"><div class="ld-label">BOS / CHOCH</div><div class="ld-val" id="ld_bos_{uid}" style="font-size:12px;">-- / --</div></div>
+        <div class="ld-card"><div class="ld-label">MTF Align</div><div class="ld-val" id="ld_mtf_{uid}">--</div></div>
+        <div class="ld-card"><div class="ld-label">Sync</div><div class="ld-val" id="ld_sync_{uid}">--</div></div>
+        <div class="ld-card"><div class="ld-label">Entry</div><div class="ld-val" id="ld_entry_{uid}">--</div></div>
+        <div class="ld-card"><div class="ld-label">Stop Loss</div><div class="ld-val" id="ld_sl_{uid}" style="color:#dc2626;">--</div></div>
+        <div class="ld-card"><div class="ld-label">TP1 / R:R</div><div class="ld-val" id="ld_tp_{uid}" style="color:#16a34a;">--</div></div>
+      </div>
+    </div>
+    <script>
+    (function(){{
+      var SYM = "{symbol}", TF = "{timeframe}", UID = "{uid}";
+      var SIG_COLORS = {{
+        "BUY":"#16a34a","STRONG_BUY":"#15803d",
+        "SELL":"#dc2626","STRONG_SELL":"#b91c1c",
+        "TRADE_REMOVED":"#ef4444"
+      }};
+      var TREND_COLORS = {{"bullish":"#16a34a","bearish":"#dc2626"}};
+
+      function $(id){{ return document.getElementById(id); }}
+      function setTxt(id, val){{ var el=$(id); if(el) el.textContent = val||"--"; }}
+      function setStyle(id, prop, val){{ var el=$(id); if(el) el.style[prop] = val; }}
+
+      function update(d){{
+        var sig = d.signal||"--";
+        var sigCol = SIG_COLORS[sig] || "#475569";
+        var conf = parseFloat(d.confidence_raw||0);
+        var confCol = conf>=70?"#16a34a":(conf>=45?"#f59e0b":"#dc2626");
+        var trendCol = TREND_COLORS[d.trend] || "#64748b";
+
+        // Status badge
+        var liveEl = $("ld_live_"+UID);
+        if(liveEl){{
+          liveEl.style.background = "rgba(34,197,94,0.12)";
+          liveEl.style.color = "#16a34a";
+          liveEl.innerHTML = '<span class="ld-dot" style="background:#22c55e;box-shadow:0 0 6px #22c55e;"></span>LIVE';
+        }}
+        // Signal
+        var sigEl = $("ld_sig_"+UID);
+        if(sigEl){{ sigEl.textContent=sig; sigEl.style.color=sigCol; }}
+        // Timestamp
+        setTxt("ld_ts_"+UID, d.last_update||"");
+        // Confidence bar
+        var fill = $("ld_cfill_"+UID);
+        if(fill){{ fill.style.width=conf+"%"; fill.style.background=confCol; }}
+        setTxt("ld_cval_"+UID, d.confidence||"--");
+        setStyle("ld_cval_"+UID, "color", confCol);
+        // Cards
+        var trendEl = $("ld_trend_"+UID);
+        if(trendEl){{ trendEl.textContent=(d.trend||"--").toUpperCase(); trendEl.style.color=trendCol; }}
+        setTxt("ld_phase_"+UID, (d.phase||"--").replace(/\\b\\w/g,c=>c.toUpperCase()));
+        $("ld_bos_"+UID).textContent = (d.bos||"none")+" / "+(d.choch||"none");
+        var mtfEl = $("ld_mtf_"+UID);
+        if(mtfEl){{ mtfEl.textContent=d.mtf_alignment||"--"; mtfEl.style.color=d.mtf_aligned?"#16a34a":"#f59e0b"; }}
+        setTxt("ld_sync_"+UID, d.sync||"--");
+        setTxt("ld_entry_"+UID, d.entry||"--");
+        setTxt("ld_sl_"+UID, d.stop_loss||"--");
+        var tp = d.tp1!="--"?d.tp1+(d.rr!="--"?" ("+d.rr+"R)":""):"--";
+        setTxt("ld_tp_"+UID, tp);
+      }}
+
+      function poll(){{
+        fetch("http://127.0.0.1:8505/refresh?symbol="+encodeURIComponent(SYM)+"&timeframe="+encodeURIComponent(TF))
+          .then(function(r){{return r.json();}})
+          .then(function(d){{if(d&&!d.error) update(d);}})
+          .catch(function(){{}});
+      }}
+      poll();
+      setInterval(poll, 1000);
+    }})();
+    </script>
+    """
+    _lm_key = f"_lm_html_{symbol}_{timeframe}"
+    if _lm_key not in st.session_state:
+        st.session_state[_lm_key] = html
+    components.html(st.session_state[_lm_key], height=185)
+
+
 st.set_page_config(page_title="AI Trading Platform", layout="wide")
 init_session_state()
 inject_styles()
@@ -1988,6 +2161,11 @@ import urllib.parse
 _global_orchestrator = None
 _tab_visibility = {}
 _BACKGROUND_ANALYSIS_RESULTS = {}
+
+# Live analysis cache: background timer thread writes here; /refresh and JS dashboard read from here
+_latest_panel_data: dict = {}   # (symbol, timeframe) -> panel payload dict
+_latest_panel_ts: dict = {}     # (symbol, timeframe) -> float timestamp
+_analysis_target: dict = {"symbol": "XAUUSD", "timeframe": "5", "active": False, "refresh_sec": 5}
 
 def run_analysis_in_background(session_uuid, symbol, timeframe, forced, live_mode):
     try:
@@ -2063,21 +2241,31 @@ class PanelApiHandler(http.server.BaseHTTPRequestHandler):
                     from backend.service_container import build_container
                     container = build_container()
                 _global_orchestrator = container["analysis_orchestrator"]
-            
+
             try:
-                bundle = _global_orchestrator.analyze(symbol, timeframe, force_refresh=True)
+                import time as _t
+                # Fast path: return pre-computed data from background analysis timer (< 1ms)
+                cached = _latest_panel_data.get((symbol, timeframe))
+                cached_ts = _latest_panel_ts.get((symbol, timeframe), 0)
+                if cached is not None and (_t.time() - cached_ts) < 30:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps(cached).encode('utf-8'))
+                    return
+
+                # Slow path: background timer hasn't run yet, compute on demand
+                bundle = _global_orchestrator.analyze(symbol, timeframe, force_refresh=False)
                 if bundle is None:
                     self.send_response(500)
                     self.end_headers()
                     self.wfile.write(b'{"error": "Analysis failed"}')
                     return
-                
-                # Log signal
-                _global_orchestrator.log_signal(bundle)
-                
-                # Build panel payload
+
                 payload = build_trade_panel_payload(bundle)
-                
+                _latest_panel_data[(symbol, timeframe)] = payload
+                _latest_panel_ts[(symbol, timeframe)] = _t.time()
+
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
@@ -2107,22 +2295,53 @@ def start_panel_api_server():
     global _global_orchestrator
     container = _get_container_v2()
     _global_orchestrator = container["analysis_orchestrator"]
-    
+
     def run_server():
         port = 8505
         server_address = ('127.0.0.1', port)
         class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
             allow_reuse_address = True
-        
+
         try:
             httpd = ThreadedTCPServer(server_address, PanelApiHandler)
             httpd.serve_forever()
         except Exception as e:
             pass
-            
+
     t = threading.Thread(target=run_server, daemon=True)
     t.start()
     return t
+
+
+@st.cache_resource
+def start_analysis_loop():
+    """Background timer thread: runs analysis on schedule, independent of Streamlit reruns.
+    Writes results to _latest_panel_data so JS can read them with no flicker."""
+    import time as _t
+
+    def _loop():
+        while True:
+            try:
+                cfg = _analysis_target.copy()
+                if cfg.get("active") and _global_orchestrator is not None:
+                    sym = cfg["symbol"]
+                    tf = cfg["timeframe"]
+                    rs = max(1, int(cfg.get("refresh_sec", 5)))
+                    bundle = _global_orchestrator.analyze(sym, tf, force_refresh=True)
+                    if bundle is not None:
+                        _global_orchestrator.log_signal(bundle)
+                        payload = build_trade_panel_payload(bundle)
+                        _latest_panel_data[(sym, tf)] = payload
+                        _latest_panel_ts[(sym, tf)] = _t.time()
+                    _t.sleep(rs)
+                else:
+                    _t.sleep(2)
+            except Exception:
+                _t.sleep(3)
+
+    th = threading.Thread(target=_loop, daemon=True)
+    th.start()
+    return th
 
 @st.cache_resource
 def _get_container_v2():
@@ -2135,6 +2354,7 @@ news_signal_repository = container.get("news_signal_repository")
 forex_factory_feed = container.get("forex_factory_feed")
 
 start_panel_api_server()
+start_analysis_loop()
 
 def adjust_live_engine_config(symbol, timeframe):
     """
@@ -2291,6 +2511,9 @@ if settings_changed:
     st.session_state.last_price = None
     st.session_state.force_analyze = True
     st.session_state.update_trigger_reason = "Settings Changed"
+    # Invalidate TradingView HTML cache so chart reloads for new symbol/timeframe
+    for _k in [k for k in st.session_state if k.startswith("_tv_html_") or k.startswith("_tv_ts_")]:
+        del st.session_state[_k]
 
 # 2. Check reanalysis criteria or force run
 should_run = False
@@ -2424,56 +2647,10 @@ components.html(
     width=0
 )
 
-# ── Premium Live Analysis Dashboard Card ──
-status_label = st.session_state.get("analysis_status", "STOPPED")
-reason = st.session_state.get("update_trigger_reason", "System Start")
-last_time = st.session_state.get("last_analysis_time", "Never")
-
-current_sig = bundle.signal.signal if bundle else "--"
-current_conf = f"{bundle.signal.confidence:.2f}%" if bundle and bundle.signal.confidence is not None else "--"
-current_bias = bundle.chart_payload.get("overlays", {}).get("structure", {}).get("trend", "n/a").upper() if bundle else "--"
-
-badge_color = {
-    "LIVE": "#0284c7",
-    "ANALYZING": "#fb7185",
-    "IDLE": "#10b981",
-    "STOPPED": "#64748b",
-    "ERROR": "#ef4444"
-}.get(status_label, "#64748b")
-
-st.markdown(
-    f"""
-    <div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 15px; margin-bottom: 20px; padding: 16px; background: rgba(255, 255, 255, 0.95); border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 20px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.04); backdrop-filter: blur(10px);'>
-        <div style='border-right: 1px solid rgba(148, 163, 184, 0.15); padding-right: 10px;'>
-            <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;'>Engine Status</div>
-            <div style='display: flex; align-items: center; gap: 6px; margin-top: 4px;'>
-                <span style='height: 8px; width: 8px; border-radius: 50%; background-color: {badge_color}; display: inline-block;'></span>
-                <span style='font-size: 15px; font-weight: 800; color: {badge_color};'>{status_label}</span>
-            </div>
-        </div>
-        <div style='border-right: 1px solid rgba(148, 163, 184, 0.15); padding-right: 10px;'>
-            <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;'>Last Update Reason</div>
-            <div style='font-size: 14px; font-weight: 700; color: #0f172a; margin-top: 4px;'>{reason}</div>
-        </div>
-        <div style='border-right: 1px solid rgba(148, 163, 184, 0.15); padding-right: 10px;'>
-            <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;'>Last Analysis Time</div>
-            <div style='font-size: 14px; font-weight: 700; color: #0f172a; margin-top: 4px;'>{last_time}</div>
-        </div>
-        <div style='border-right: 1px solid rgba(148, 163, 184, 0.15); padding-right: 10px;'>
-            <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;'>Market Bias</div>
-            <div style='font-size: 14px; font-weight: 700; color: #0f172a; margin-top: 4px;'>{current_bias}</div>
-        </div>
-        <div>
-            <div style='font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;'>Signal / Confidence</div>
-            <div style='font-size: 14px; font-weight: 700; color: #0f172a; margin-top: 4px;'>{current_sig} ({current_conf})</div>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+# ── JS Live Metrics Dashboard (zero-flicker — updates via polling, no Streamlit rerun needed) ──
+render_live_metrics_js(st.session_state.analysis_symbol, st.session_state.analysis_timeframe)
 
 render_section_header("Chart Workspace", "Live interactive trading chart with AI analysis panel — signal, entry, SL, TP and structure overlaid in real time.")
-render_metric_strip(bundle)
 
 # Render TradingView Live Chart Widget
 render_tradingview_widget(st.session_state.analysis_symbol, st.session_state.analysis_timeframe, bundle)
@@ -3543,16 +3720,26 @@ with levels_tab:
         else:
             st.info("No swing points logged in this window.")
 
+# ── Update background analysis target so the timer thread knows what to analyze ──
+_analysis_target.update({
+    "active": st.session_state.get("live_mode", False),
+    "symbol": st.session_state.analysis_symbol,
+    "timeframe": st.session_state.analysis_timeframe,
+    "refresh_sec": int(st.session_state.get("refresh_sec", 5)),
+})
+start_analysis_loop()
+
 # ── Live Mode Auto-Refresh Loop ──
+# Rerun every 10s just to sync tabs/deep analysis — live metrics update via JS (no rerun needed)
 if st.session_state.get("live_mode", False):
     sess_id = st.session_state.get("session_uuid")
     visibility_state = _tab_visibility.get(sess_id, "visible")
-    
+
     if visibility_state == "hidden":
-        sleep_duration = 15.0
+        sleep_duration = 30.0
     else:
-        sleep_duration = 1.0
-        
+        sleep_duration = 10.0
+
     import time
     time.sleep(sleep_duration)
     st.rerun()
