@@ -491,7 +491,7 @@ def start_engine_api_server(orchestrator):
         asyncio.set_event_loop(loop)
         live_analysis_manager.loop = loop
         
-        config = uvicorn.Config(app, host="127.0.0.1", port=8505, log_level="error")
+        config = uvicorn.Config(app, host="0.0.0.0", port=8505, log_level="error")
         server = uvicorn.Server(config)
         
         logger.info("Starting Starlette API and WebSocket server on port 8505...")

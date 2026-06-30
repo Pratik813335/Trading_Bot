@@ -850,7 +850,13 @@ def render_lightweight_chart(symbol, timeframe, bundle):
             refreshBtn.disabled = true;
           }}
 
-          fetch(`http://127.0.0.1:8505/refresh?symbol=${{encodeURIComponent(panelPayload.symbol)}}&timeframe=${{encodeURIComponent(panelPayload.timeframe)}}`)
+          let wsHost = "127.0.0.1";
+          try {{
+              wsHost = window.parent.location.hostname || window.location.hostname || "127.0.0.1";
+          }} catch (e) {{
+              wsHost = window.location.hostname || "127.0.0.1";
+          }}
+          fetch(`http://${{wsHost}}:8505/refresh?symbol=${{encodeURIComponent(panelPayload.symbol)}}&timeframe=${{encodeURIComponent(panelPayload.timeframe)}}`)
             .then(res => res.json())
             .then(data => {{
               if (data && !data.error) {{
@@ -1442,7 +1448,13 @@ def render_svg_chart(symbol, timeframe, bundle):
             refreshBtn.disabled = true;
           }}
 
-          fetch(`http://127.0.0.1:8505/refresh?symbol=${{encodeURIComponent(panelPayload.symbol)}}&timeframe=${{encodeURIComponent(panelPayload.timeframe)}}`)
+          let wsHost = "127.0.0.1";
+          try {{
+              wsHost = window.parent.location.hostname || window.location.hostname || "127.0.0.1";
+          }} catch (e) {{
+              wsHost = window.location.hostname || "127.0.0.1";
+          }}
+          fetch(`http://${{wsHost}}:8505/refresh?symbol=${{encodeURIComponent(panelPayload.symbol)}}&timeframe=${{encodeURIComponent(panelPayload.timeframe)}}`)
             .then(res => res.json())
             .then(data => {{
               if (data && !data.error) {{
@@ -1693,7 +1705,13 @@ def render_tradingview_widget(symbol, timeframe, bundle):
 
         // Connect WebSocket client
         const connectWs = () => {{
-          const wsUrl = `ws://127.0.0.1:8505/ws?symbol=\${{encodeURIComponent("{symbol}")}}&timeframe=\${{encodeURIComponent("{timeframe}")}}&session_id=\${{encodeURIComponent("{session_id}")}}`;
+          let wsHost = "127.0.0.1";
+          try {{
+              wsHost = window.parent.location.hostname || window.location.hostname || "127.0.0.1";
+          }} catch (e) {{
+              wsHost = window.location.hostname || "127.0.0.1";
+          }}
+          const wsUrl = `ws://${{wsHost}}:8505/ws?symbol=\${{encodeURIComponent("{symbol}")}}&timeframe=\${{encodeURIComponent("{timeframe}")}}&session_id=\${{encodeURIComponent("{session_id}")}}`;
           const socket = new WebSocket(wsUrl);
 
           socket.onmessage = function(event) {{
@@ -2160,7 +2178,13 @@ components.html(
     f"""
     <script>
         const sessionId = "{session_id_js}";
-        const endpoint = "http://127.0.0.1:8505/visibility";
+        let wsHost = "127.0.0.1";
+        try {{
+            wsHost = window.parent.location.hostname || window.location.hostname || "127.0.0.1";
+        }} catch (e) {{
+            wsHost = window.location.hostname || "127.0.0.1";
+        }}
+        const endpoint = `http://${{wsHost}}:8505/visibility`;
         
         function sendVisibility(state) {{
             fetch(`${{endpoint}}?session_id=${{sessionId}}&state=${{state}}`, {{ mode: "no-cors" }})

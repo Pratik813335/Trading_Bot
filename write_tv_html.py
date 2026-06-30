@@ -203,7 +203,13 @@ html = f"""
 
         // Connect WebSocket client
         const connectWs = () => {{
-          const wsUrl = `ws://127.0.0.1:8505/ws?symbol=\\${{encodeURIComponent("{symbol}")}}&timeframe=\\${{encodeURIComponent("{timeframe}")}}&session_id=\\${{encodeURIComponent("{session_id}")}}`;
+          let wsHost = "127.0.0.1";
+          try {{
+              wsHost = window.parent.location.hostname || window.location.hostname || "127.0.0.1";
+          }} catch (e) {{
+              wsHost = window.location.hostname || "127.0.0.1";
+          }}
+          const wsUrl = `ws://${{wsHost}}:8505/ws?symbol=\\${{encodeURIComponent("{symbol}")}}&timeframe=\\${{encodeURIComponent("{timeframe}")}}&session_id=\\${{encodeURIComponent("{session_id}")}}`;
           const socket = new WebSocket(wsUrl);
 
           socket.onmessage = function(event) {{
