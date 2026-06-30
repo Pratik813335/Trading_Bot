@@ -687,6 +687,7 @@ def render_lightweight_chart(symbol, timeframe, bundle):
               <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Stop Loss</div><div style="font-size:15px;font-weight:700;">${{panelPayload.stop_loss}}</div></div>
               <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 1</div><div style="font-size:15px;font-weight:700;">${{panelPayload.tp1}}</div></div>
               <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 2</div><div style="font-size:15px;font-weight:700;">${{panelPayload.tp2}}</div></div>
+              <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 3</div><div style="font-size:15px;font-weight:700;">${{panelPayload.tp3}}</div></div>
             </div>
             <div style="display:grid;gap:8px;">
               <div style="padding:10px 12px;border-radius:16px;background:rgba(37,99,235,0.16);border:1px solid rgba(96,165,250,0.35);">
@@ -824,6 +825,7 @@ def render_lightweight_chart(symbol, timeframe, bundle):
                 <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Stop Loss</div><div style="font-size:15px;font-weight:700;">${{data.stop_loss}}</div></div>
                 <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 1</div><div style="font-size:15px;font-weight:700;">${{data.tp1}}</div></div>
                 <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 2</div><div style="font-size:15px;font-weight:700;">${{data.tp2}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 3</div><div style="font-size:15px;font-weight:700;">${{data.tp3}}</div></div>
               </div>
               <div style="display:grid;gap:8px;">
                 <div style="padding:10px 12px;border-radius:16px;background:rgba(37,99,235,0.16);border:1px solid rgba(96,165,250,0.35);">
@@ -1617,6 +1619,7 @@ def render_tradingview_widget(symbol, timeframe, bundle):
                 <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Stop Loss</div><div style="font-size:15px;font-weight:700;">\${{data.stop_loss}}</div></div>
                 <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 1</div><div style="font-size:15px;font-weight:700;">\${{data.tp1}}</div></div>
                 <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 2</div><div style="font-size:15px;font-weight:700;">\${{data.tp2}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 3</div><div style="font-size:15px;font-weight:700;">\${{data.tp3}}</div></div>
               </div>
               <div style="display:grid;gap:8px;">
                 <div style="padding:10px 12px;border-radius:16px;background:rgba(37,99,235,0.16);border:1px solid rgba(96,165,250,0.35);">
@@ -1910,122 +1913,7 @@ import socketserver
 import threading
 import urllib.parse
 
-_global_orchestrator = None
-_tab_visibility = {}
-_BACKGROUND_ANALYSIS_RESULTS = {}
-
-def run_analysis_in_background(session_uuid, symbol, timeframe, forced, live_mode):
-    try:
-        # Run orchestrator analyze
-        bundle = orchestrator.analyze(symbol, timeframe, forced_strategy=forced, force_refresh=True)
-        if bundle is not None:
-            # Log signal
-            orchestrator.log_signal(bundle)
-            
-            # Extract candle close metrics
-            from datetime import datetime, timezone
-            last_row = bundle.candles.iloc[-1]
-            last_price = float(last_row["close"])
-            last_candle_time = last_row.name.isoformat() if isinstance(last_row.name, pd.Timestamp) else str(last_row.name)
-            
-            _BACKGROUND_ANALYSIS_RESULTS[session_uuid] = {
-                "analysis_bundle": bundle,
-                "analysis_symbol": symbol,
-                "analysis_timeframe": timeframe,
-                "last_analysis_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "last_analysis_time_dt": datetime.now(timezone.utc),
-                "last_price": last_price,
-                "last_candle_time": last_candle_time,
-                "analysis_status": "LIVE" if live_mode else "IDLE",
-                "is_analyzing": False,
-                "update_trigger_reason": "Analysis complete"
-            }
-        else:
-            _BACKGROUND_ANALYSIS_RESULTS[session_uuid] = {
-                "analysis_status": "ERROR",
-                "is_analyzing": False,
-                "update_trigger_reason": "Failed to fetch/analyze data"
-            }
-    except Exception as e:
-        _BACKGROUND_ANALYSIS_RESULTS[session_uuid] = {
-            "analysis_status": "ERROR",
-            "is_analyzing": False,
-            "update_trigger_reason": f"Error: {e}"
-        }
-
-class PanelApiHandler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
-
-    def end_headers(self):
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        super().end_headers()
-
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self.end_headers()
-
-    def do_GET(self):
-        parsed_url = urllib.parse.urlparse(self.path)
-        if parsed_url.path == '/refresh':
-            query = urllib.parse.parse_qs(parsed_url.query)
-            symbol = query.get('symbol', [None])[0]
-            timeframe = query.get('timeframe', [None])[0]
-            
-            if not symbol or not timeframe:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(b'{"error": "Missing symbol or timeframe"}')
-                return
-            
-            global _global_orchestrator
-            if _global_orchestrator is None:
-                try:
-                    container = _get_container_v2()
-                except Exception:
-                    from backend.service_container import build_container
-                    container = build_container()
-                _global_orchestrator = container["analysis_orchestrator"]
-            
-            try:
-                bundle = _global_orchestrator.analyze(symbol, timeframe, force_refresh=True)
-                if bundle is None:
-                    self.send_response(500)
-                    self.end_headers()
-                    self.wfile.write(b'{"error": "Analysis failed"}')
-                    return
-                
-                # Log signal
-                _global_orchestrator.log_signal(bundle)
-                
-                # Build panel payload
-                payload = build_trade_panel_payload(bundle)
-                
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps(payload).encode('utf-8'))
-            except Exception as e:
-                self.send_response(500)
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
-        elif parsed_url.path == '/visibility':
-            query = urllib.parse.parse_qs(parsed_url.query)
-            state = query.get('state', ['visible'])[0]
-            session_id = query.get('session_id', ['default'])[0]
-            global _tab_visibility
-            _tab_visibility[session_id] = state
-            
-            self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(b'{"status": "ok"}')
-        else:
-            self.send_response(404)
-            self.end_headers()
+# Starlette Live Engine API integration is used instead of http.server
 
 from backend.live_analysis_engine import start_engine_api_server, live_analysis_manager
 
@@ -2163,7 +2051,21 @@ with st.container():
             index=strategies.index(st.session_state.get("selected_strategy", "Auto (Session-Aware)"))
         )
     with control_cols[3]:
-        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        # Synced Toggle for Live Analysis
+        live_toggle = st.toggle("Live Analysis", value=st.session_state.get("live_mode", False), key="live_toggle_widget")
+        if live_toggle != st.session_state.get("live_mode", False):
+            st.session_state.live_mode = live_toggle
+            if live_toggle:
+                st.session_state.analysis_running = True
+                st.session_state.analysis_status = "LIVE"
+                st.session_state.update_trigger_reason = "Live Analysis Enabled"
+            else:
+                st.session_state.analysis_running = False
+                st.session_state.analysis_status = "STOPPED"
+                st.session_state.update_trigger_reason = "Live Analysis Disabled"
+            st.rerun()
+
+        st.markdown("<div style='height: 5px;'></div>", unsafe_allow_html=True)
         if st.session_state.get("live_mode", False):
             if st.button("Stop Analysis", type="secondary", use_container_width=True):
                 st.session_state.live_mode = False
@@ -2177,7 +2079,6 @@ with st.container():
                 st.session_state.analysis_running = True
                 st.session_state.analysis_status = "LIVE"
                 st.session_state.update_trigger_reason = "Manual Run"
-                st.session_state.force_analyze = True
                 st.rerun()
 
 # Live Engine settings are auto-adjusted in the background
@@ -2202,6 +2103,7 @@ if settings_changed:
     st.session_state.last_price = None
     st.session_state.force_analyze = True
     st.session_state.update_trigger_reason = "Settings Changed"
+    st.session_state.analysis_bundle = None
 
 # 2. Perform live or manual analysis
 from datetime import datetime, timezone
@@ -2232,52 +2134,22 @@ if st.session_state.live_mode:
     # Retrieve the latest bundle from the backend manager
     bundle = live_analysis_manager.get_latest_analysis(symbol, timeframe)
     
-    # Initial run fallback: if no bundle is generated yet, run it synchronously so user doesn't wait
     if bundle is None:
-        with st.spinner("⏳ Starting backend Live Engine and performing initial analysis..."):
-            try:
-                bundle = orchestrator.analyze(symbol, timeframe, forced_strategy=selected_strategy if selected_strategy != "Auto (Session-Aware)" else None, force_refresh=True)
-                if bundle is not None:
-                    orchestrator.log_signal(bundle)
-                    live_analysis_manager.set_latest_analysis(symbol, timeframe, bundle)
-            except Exception as e:
-                st.session_state.analysis_status = "ERROR"
-                st.session_state.update_trigger_reason = f"Initial Run Error: {e}"
-                
-    if bundle is not None:
-        st.session_state.analysis_bundle = bundle
-        last_row = bundle.candles.iloc[-1]
-        st.session_state.last_price = float(last_row["close"])
-        st.session_state.last_candle_time = last_row.name.isoformat() if isinstance(last_row.name, pd.Timestamp) else str(last_row.name)
-        st.session_state.analysis_status = "LIVE"
-    else:
-        st.session_state.analysis_status = "ERROR"
+        st.info("⏳ Connecting to Live Analysis Engine and waiting for initial analysis from backend...")
+        st.stop()
+        
+    st.session_state.analysis_bundle = bundle
+    last_row = bundle.candles.iloc[-1]
+    st.session_state.last_price = float(last_row["close"])
+    st.session_state.last_candle_time = last_row.name.isoformat() if isinstance(last_row.name, pd.Timestamp) else str(last_row.name)
+    st.session_state.analysis_status = "LIVE"
         
 else:
-    # Non-live mode (standard manual analysis)
-    if st.session_state.analysis_bundle is None or st.session_state.force_analyze:
-        st.session_state.force_analyze = False
-        with st.spinner("⏳ Analyzing market structure and executing rule checks..."):
-            try:
-                bundle = orchestrator.analyze(symbol, timeframe, forced_strategy=selected_strategy if selected_strategy != "Auto (Session-Aware)" else None, force_refresh=True)
-                if bundle is not None:
-                    st.session_state.analysis_bundle = bundle
-                    orchestrator.log_signal(bundle)
-                    st.session_state.last_analysis_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    st.session_state.last_analysis_time_dt = datetime.now(timezone.utc)
-                    last_row = bundle.candles.iloc[-1]
-                    st.session_state.last_price = float(last_row["close"])
-                    st.session_state.last_candle_time = last_row.name.isoformat() if isinstance(last_row.name, pd.Timestamp) else str(last_row.name)
-                    st.session_state.analysis_status = "IDLE"
-            except Exception as e:
-                st.session_state.analysis_status = "ERROR"
-                st.session_state.update_trigger_reason = f"Error: {e}"
-
-bundle = st.session_state.analysis_bundle
-
-if bundle is None:
-    st.info("Select a symbol and timeframe, then click `Run Analysis`.")
-    st.stop()
+    # Live mode is stopped/inactive
+    bundle = st.session_state.get("analysis_bundle")
+    if bundle is None:
+        st.info("Select a symbol and timeframe, then click `Run Analysis` to start live backend-driven analysis.")
+        st.stop()
 
 # ── Visibility component injection ──
 session_id_js = st.session_state.session_uuid
@@ -2407,6 +2279,7 @@ with overview_tab:
                 f"<li><b>Stop Loss:</b> {format_price(bundle.signal.stop_loss) if show_levels else '--'}</li>",
                 f"<li><b>Take Profit 1:</b> {format_price(bundle.signal.tp1) if show_levels else '--'}</li>",
                 f"<li><b>Take Profit 2:</b> {format_price(bundle.signal.tp2) if show_levels else '--'}</li>",
+                f"<li><b>Take Profit 3:</b> {format_price(getattr(bundle.signal, 'tp3', 0.0)) if show_levels else '--'}</li>",
                 f"<li><b>Risk / Reward:</b> {bundle.signal.rr_ratio if show_levels and bundle.signal.rr_ratio not in [0, 0.0] else '--'}</li>",
             ]
         )
@@ -3431,7 +3304,7 @@ with levels_tab:
 # ── Live Mode Auto-Refresh Loop ──
 if st.session_state.get("live_mode", False):
     sess_id = st.session_state.get("session_uuid")
-    visibility_state = _tab_visibility.get(sess_id, "visible")
+    visibility_state = live_analysis_manager.tab_visibility.get(sess_id, "visible")
     
     if visibility_state == "hidden":
         sleep_duration = 15.0

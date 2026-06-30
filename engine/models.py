@@ -86,6 +86,8 @@ class SignalDecision:
     chart_sync: float
     warnings: list[str] = field(default_factory=list)
     confidence_breakdown: dict[str, float] = field(default_factory=dict)
+    tp3: float = 0.0
+
 
 
 @dataclass

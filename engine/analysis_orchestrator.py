@@ -217,6 +217,7 @@ class AnalysisOrchestrator:
             signal.stop_loss = session_signal.stop_loss
             signal.tp1 = session_signal.take_profit_1
             signal.tp2 = session_signal.take_profit_2
+            signal.tp3 = session_signal.take_profit_3
             signal.rr_ratio = session_signal.rr_ratio
             signal.reasons = list(set(list(signal.reasons or []) + [session_signal.reasoning] + (session_signal.confluences or [])))
             signal.warnings = list(set(list(signal.warnings or []) + (session_signal.warnings or [])))
@@ -598,6 +599,7 @@ class AnalysisOrchestrator:
             signal.stop_loss = float(active.get("stop_loss") or signal.stop_loss)
             signal.tp1 = float(active.get("tp1") or signal.tp1)
             signal.tp2 = float(active.get("tp2") or signal.tp2)
+            signal.tp3 = float(active.get("tp3") or getattr(signal, "tp3", 0.0))
             signal.rr_ratio = float(active.get("rr_ratio") or signal.rr_ratio)
 
         signal, ai_explanation, trade_payload = self._enforce_trade_contract(signal, ai_explanation, zones)

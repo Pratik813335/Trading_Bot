@@ -37,6 +37,7 @@ class SessionSignal:
     stop_loss: float
     take_profit_1: float
     take_profit_2: float
+    take_profit_3: float
     rr_ratio: float
     confidence: int                # 1–100
     reasoning: str
@@ -197,12 +198,14 @@ class SessionStrategyEngine:
             sl = min(ema200 - atr_price * 0.5, price - atr_price * 2.0)
             tp1 = entry + abs(entry - sl) * 1.5
             tp2 = entry + abs(entry - sl) * 2.5
+            tp3 = entry + abs(entry - sl) * 3.5
             reason = f"Trend Following BUY (ADX: {adx_val:.1f})"
         elif direction == "SELL":
             entry = price
             sl = max(ema200 + atr_price * 0.5, price + atr_price * 2.0)
             tp1 = entry - abs(sl - entry) * 1.5
             tp2 = entry - abs(sl - entry) * 2.5
+            tp3 = entry - abs(sl - entry) * 3.5
             reason = f"Trend Following SELL (ADX: {adx_val:.1f})"
         else:
             return self._default_wait(session, symbol, candles, pip_size, None, None, ["No clear trend alignment"])
@@ -221,6 +224,7 @@ class SessionStrategyEngine:
             stop_loss=round(sl, 5),
             take_profit_1=round(tp1, 5),
             take_profit_2=round(tp2, 5),
+            take_profit_3=round(tp3, 5),
             rr_ratio=rr,
             confidence=confidence,
             reasoning=reason,
@@ -291,12 +295,14 @@ class SessionStrategyEngine:
             sl = price - pip_target_sl * pip_size
             tp1 = price + pip_target_tp1 * pip_size
             tp2 = bb_upper
+            tp3 = price + (bb_upper - price) * 1.5
             reason = "Quick Scalp BUY (BB Squeeze + Stochastic oversold)"
         elif direction == "SELL":
             entry = price
             sl = price + pip_target_sl * pip_size
             tp1 = price - pip_target_tp1 * pip_size
             tp2 = bb_lower
+            tp3 = price - (price - bb_lower) * 1.5
             reason = "Quick Scalp SELL (BB Squeeze + Stochastic overbought)"
         else:
             return self._default_wait(session, symbol, candles, pip_size, None, None, ["No scalp triggers met"])
@@ -315,6 +321,7 @@ class SessionStrategyEngine:
             stop_loss=round(sl, 5),
             take_profit_1=round(tp1, 5),
             take_profit_2=round(tp2, 5),
+            take_profit_3=round(tp3, 5),
             rr_ratio=rr,
             confidence=confidence,
             reasoning=reason,
@@ -387,6 +394,7 @@ class SessionStrategyEngine:
                 sl = entry - 15 * pip_size
             tp1 = closest_support + range_size * 0.5
             tp2 = closest_resistance - atr_price * 0.5
+            tp3 = closest_resistance
             reason = "Range Support BUY Bounce"
         elif direction == "SELL":
             entry = price
@@ -395,6 +403,7 @@ class SessionStrategyEngine:
                 sl = entry + 15 * pip_size
             tp1 = closest_resistance - range_size * 0.5
             tp2 = closest_support + atr_price * 0.5
+            tp3 = closest_support
             reason = "Range Resistance SELL Reject"
         else:
             return self._default_wait(session, symbol, candles, pip_size, closest_resistance, closest_support, ["Price in middle of range"])
@@ -413,6 +422,7 @@ class SessionStrategyEngine:
             stop_loss=round(sl, 5),
             take_profit_1=round(tp1, 5),
             take_profit_2=round(tp2, 5),
+            take_profit_3=round(tp3, 5),
             rr_ratio=rr,
             confidence=confidence,
             reasoning=reason,
@@ -476,12 +486,14 @@ class SessionStrategyEngine:
             sl = closest_resistance - atr_price * 0.8
             tp1 = entry + abs(entry - sl) * 2.0
             tp2 = entry + abs(entry - sl) * 3.5
+            tp3 = entry + abs(entry - sl) * 5.0
             reason = "Resistance Breakout BUY"
         elif direction == "SELL":
             entry = price
             sl = closest_support + atr_price * 0.8
             tp1 = entry - abs(sl - entry) * 2.0
             tp2 = entry - abs(sl - entry) * 3.5
+            tp3 = entry - abs(sl - entry) * 5.0
             reason = "Support Breakdown SELL"
         else:
             return self._default_wait(session, symbol, candles, pip_size, closest_resistance, closest_support, ["Price remains within range"])
@@ -500,6 +512,7 @@ class SessionStrategyEngine:
             stop_loss=round(sl, 5),
             take_profit_1=round(tp1, 5),
             take_profit_2=round(tp2, 5),
+            take_profit_3=round(tp3, 5),
             rr_ratio=rr,
             confidence=confidence,
             reasoning=reason,
@@ -575,12 +588,14 @@ class SessionStrategyEngine:
             sl = price - atr_price * 3.5
             tp1 = price + abs(price - sl) * 2.5
             tp2 = price + abs(price - sl) * 4.0
+            tp3 = price + abs(price - sl) * 5.5
             reason = f"Carry Trade BUY (Interest diff: {interest_diff:+.2f}%)"
         elif direction == "SELL":
             entry = price
             sl = price + atr_price * 3.5
             tp1 = price - abs(sl - price) * 2.5
             tp2 = price - abs(sl - price) * 4.0
+            tp3 = price - abs(sl - price) * 5.5
             reason = f"Carry Trade SELL (Interest diff: {interest_diff:+.2f}%)"
         else:
             return self._default_wait(session, symbol, candles, pip_size, None, None, ["Yield favors trade direction, but trend is contrary"])
@@ -599,6 +614,7 @@ class SessionStrategyEngine:
             stop_loss=round(sl, 5),
             take_profit_1=round(tp1, 5),
             take_profit_2=round(tp2, 5),
+            take_profit_3=round(tp3, 5),
             rr_ratio=rr,
             confidence=confidence,
             reasoning=reason,
@@ -635,6 +651,7 @@ class SessionStrategyEngine:
             stop_loss=0.0,
             take_profit_1=0.0,
             take_profit_2=0.0,
+            take_profit_3=0.0,
             rr_ratio=0.0,
             confidence=0,
             reasoning=f"Standing by in {session.name} session",

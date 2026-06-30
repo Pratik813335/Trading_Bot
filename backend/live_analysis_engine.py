@@ -56,6 +56,7 @@ def build_trade_panel_payload(bundle):
         "stop_loss": format_price(bundle.signal.stop_loss) if show_levels else "--",
         "tp1": format_price(bundle.signal.tp1) if show_levels else "--",
         "tp2": format_price(bundle.signal.tp2) if show_levels else "--",
+        "tp3": format_price(getattr(bundle.signal, "tp3", 0.0)) if show_levels else "--",
         "rr": "--" if not show_levels or bundle.signal.rr_ratio in [0, 0.0] else f"{bundle.signal.rr_ratio:.2f}",
         "trend": structure.get("trend", "n/a"),
         "phase": structure.get("phase", "n/a"),
@@ -126,6 +127,7 @@ def build_chart_draw_payload(bundle):
             ("SL", overlays.get("stop_loss"), "#dc2626"),
             ("TP1", overlays.get("tp1"), "#16a34a"),
             ("TP2", overlays.get("tp2"), "#166534"),
+            ("TP3", overlays.get("tp3") or getattr(bundle.signal, "tp3", None), "#15803d"),
         ]:
             if value not in [None, 0, 0.0, ""]:
                 levels.append({"title": label, "value": float(value), "color": color})
@@ -296,6 +298,16 @@ class LiveAnalysisSession:
                 if self.latest_bundle is not None:
                     logger.info(f"Broadcasting last successful analysis for {self.symbol} {self.timeframe} due to refresh error")
                     self.broadcast_bundle(self.latest_bundle)
+            finally:
+                # Release unused resources after each cycle
+                try:
+                    if "bundle" in locals():
+                        if bundle is not self.latest_bundle:
+                            del bundle
+                except Exception:
+                    pass
+                import gc
+                gc.collect()
             
             # Prevent overlapping analysis: wait exactly remaining time or yields thread
             elapsed = time.time() - start_time

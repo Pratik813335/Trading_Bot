@@ -39,6 +39,7 @@ class TradingViewRenderer:
             "stop_loss": signal.stop_loss,
             "tp1": signal.tp1,
             "tp2": signal.tp2,
+            "tp3": getattr(signal, "tp3", 0.0),
             "structure": {
                 "trend": structure_state.trend,
                 "phase": structure_state.phase,

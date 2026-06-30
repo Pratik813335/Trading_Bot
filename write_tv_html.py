@@ -1,7 +1,6 @@
 import sys
 sys.path.append(r"d:\Trading_Bot")
 
-import app
 import json
 
 # Mock streamlit session state
@@ -130,6 +129,7 @@ html = f"""
                 <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Stop Loss</div><div style="font-size:15px;font-weight:700;">\\${{data.stop_loss}}</div></div>
                 <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 1</div><div style="font-size:15px;font-weight:700;">\\${{data.tp1}}</div></div>
                 <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 2</div><div style="font-size:15px;font-weight:700;">\\${{data.tp2}}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 3</div><div style="font-size:15px;font-weight:700;">\\${{data.tp3}}</div></div>
               </div>
               <div style="display:grid;gap:8px;">
                 <div style="padding:10px 12px;border-radius:16px;background:rgba(37,99,235,0.16);border:1px solid rgba(96,165,250,0.35);">

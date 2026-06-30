@@ -1,0 +1,272 @@
+
+    <div id="tv_chart_clean_XAUUSD_5_shell" style="height:760px;width:100%;position:relative;border:1px solid rgba(148,163,184,0.35);border-radius:22px;overflow:hidden;background:#ffffff;">
+      <style>
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        .spinning {
+          display: inline-block !important;
+          animation: spin 1s linear infinite;
+        }
+        #tv_panel_clean_XAUUSD_5::-webkit-resizer {
+          background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><path d="M10,0 L0,10 M10,3 L3,10 M10,6 L6,10" stroke="rgba(255,255,255,0.6)" stroke-width="1.5" stroke-linecap="round"/></svg>');
+          background-repeat: no-repeat;
+          background-position: bottom right;
+          width: 14px;
+          height: 14px;
+        }
+      </style>
+      <div style="position:absolute;top:14px;right:14px;z-index:8;display:flex;gap:10px;align-items:center;">
+        <div id="news_badge_container">
+          <div style="padding:10px 14px;background:#22c55e;color:#fff;font-weight:700;border-radius:999px;font-size:13px;box-shadow:0 4px 12px rgba(34,197,94,0.2);display:flex;align-items:center;gap:6px;font-family:Arial,sans-serif;">
+            <span>🟢 News Clear</span>
+          </div>
+        </div>
+        <button type="button" id="tv_chart_clean_XAUUSD_5_fullscreen" style="border:none;border-radius:999px;padding:10px 14px;background:rgba(15,23,42,0.88);color:#fff;font-weight:700;cursor:pointer;">Fullscreen</button>
+      </div>
+      <div id="tv_panel_clean_XAUUSD_5" style="position:absolute;top:18px;left:18px;width:340px;height:440px;min-width:260px;min-height:200px;resize:both;overflow:auto;z-index:9;border-radius:24px;background:linear-gradient(180deg, rgba(15,23,42,0.86), rgba(30,41,59,0.82));color:#f8fafc;border:1px solid rgba(148,163,184,0.28);box-shadow:0 25px 50px rgba(15,23,42,0.35);font-family:Arial,sans-serif;backdrop-filter:blur(10px);"></div>
+      <div id="tv_chart_clean_XAUUSD_5" style="height:100%;width:100%;"></div>
+      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+      <script type="text/javascript">
+        const shell = document.getElementById("tv_chart_clean_XAUUSD_5_shell");
+        const chartNode = document.getElementById("tv_chart_clean_XAUUSD_5");
+        const panel = document.getElementById("tv_panel_clean_XAUUSD_5");
+        const fullscreenButton = document.getElementById("tv_chart_clean_XAUUSD_5_fullscreen");
+
+        let statusColor = "#94a3b8";
+        let signalBg = "rgba(148, 163, 184, 0.25)";
+        let headerGradient = "linear-gradient(135deg, rgba(100, 116, 139, 0.55), rgba(71, 85, 105, 0.42))";
+
+        panel.innerHTML = `
+          <div id="tv_panel_clean_XAUUSD_5_drag" style="padding:12px 16px;background:\${headerGradient};font-size:16px;font-weight:700;position:sticky;top:0;display:flex;justify-content:space-between;align-items:center;cursor:move;user-select:none;border-top-left-radius:24px;border-top-right-radius:24px;">
+            <span style="display:flex;align-items:center;gap:6px;">
+              <span style="width:8px;height:8px;border-radius:50%;background:\${statusColor};display:inline-block;box-shadow:0 0 8px \${statusColor};"></span>
+              Trading Panel
+            </span>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <button type="button" id="tv_panel_clean_XAUUSD_5_minimise" style="border:none;background:rgba(255,255,255,0.16);color:#fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-weight:700;font-size:14px;transition:background 0.2s;">−</button>
+            </div>
+          </div>
+          <div id="tv_panel_clean_XAUUSD_5_content" style="padding:16px;">
+            <div style="color:#cbd5e1;font-size:14px;font-weight:600;">Connecting to Live Analysis Engine...</div>
+          </div>
+        `;
+
+        const showError = (message) => {
+          chartNode.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#64748b;font:600 15px Arial,sans-serif;">\${message}</div>`;
+        };
+
+        const updatePanelContent = (data) => {
+          let statusColor = "#22c55e";
+          let signalBg = "rgba(34, 197, 94, 0.25)";
+          let headerGradient = "linear-gradient(135deg, rgba(20,184,166,0.55), rgba(37,99,235,0.42))";
+
+          if (data.signal === "TRADE_REMOVED") {
+            statusColor = "#ef4444";
+            signalBg = "rgba(239, 68, 68, 0.35)";
+            headerGradient = "linear-gradient(135deg, rgba(239, 68, 68, 0.6), rgba(220, 38, 38, 0.5))";
+          } else if (data.signal.includes("BUY")) {
+            statusColor = "#22c55e";
+            signalBg = "rgba(34, 197, 94, 0.35)";
+            headerGradient = "linear-gradient(135deg, rgba(16, 185, 129, 0.6), rgba(5, 150, 105, 0.5))";
+          } else if (data.signal.includes("SELL")) {
+            statusColor = "#f97316";
+            signalBg = "rgba(249, 115, 22, 0.35)";
+            headerGradient = "linear-gradient(135deg, rgba(249, 115, 22, 0.6), rgba(234, 88, 12, 0.5))";
+          } else {
+            statusColor = "#94a3b8";
+            signalBg = "rgba(148, 163, 184, 0.25)";
+            headerGradient = "linear-gradient(135deg, rgba(100, 116, 139, 0.55), rgba(71, 85, 105, 0.42))";
+          }
+
+          const dragHeader = document.getElementById("tv_panel_clean_XAUUSD_5_drag");
+          if (dragHeader) {
+            dragHeader.style.background = headerGradient;
+          }
+          const statusDot = dragHeader ? dragHeader.querySelector('span > span') : null;
+          if (statusDot) {
+            statusDot.style.background = statusColor;
+            statusDot.style.boxShadow = `0 0 8px \${statusColor}`;
+          }
+
+          const contentDiv = document.getElementById("tv_panel_clean_XAUUSD_5_content");
+          if (contentDiv) {
+            contentDiv.innerHTML = `
+              <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:\${signalBg};">\${data.signal}</span>
+                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">\${data.confidence}</span>
+                <span style="padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(255,255,255,0.1);">\${data.status}</span>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:14px;">
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Symbol</div><div style="font-size:15px;font-weight:700;">\${data.symbol}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Timeframe</div><div style="font-size:15px;font-weight:700;">\${data.timeframe}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Entry</div><div style="font-size:15px;font-weight:700;">\${data.entry}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Stop Loss</div><div style="font-size:15px;font-weight:700;">\${data.stop_loss}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 1</div><div style="font-size:15px;font-weight:700;">\${data.tp1}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 2</div><div style="font-size:15px;font-weight:700;">\${data.tp2}</div></div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);"><div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Take Profit 3</div><div style="font-size:15px;font-weight:700;">\${data.tp3}</div></div>
+              </div>
+              <div style="display:grid;gap:8px;">
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(37,99,235,0.16);border:1px solid rgba(96,165,250,0.35);">
+                  <div style="font-size:11px;color:#bfdbfe;margin-bottom:4px;">Candle Pattern</div>
+                  <div style="font-size:14px;font-weight:700;color:#eff6ff;">\${data.pattern}</div>
+                </div>
+                <div style="padding:10px 12px;border-radius:16px;background:rgba(255,255,255,0.08);border:1px solid rgba(148,163,184,0.16);">
+                  <div style="font-size:11px;color:#cbd5e1;margin-bottom:4px;">Structure</div>
+                  <div style="font-size:13px;font-weight:700;">Trend: \${data.trend}</div>
+                  <div style="font-size:13px;font-weight:700;">Phase: \${data.phase}</div>
+                  <div style="font-size:13px;font-weight:700;">BOS / CHOCH: \${data.bos} / \${data.choch}</div>
+                </div>
+              </div>
+            `;
+          }
+        };
+
+        const updateNewsBadge = (newsText) => {
+          const badgeContainer = document.getElementById("news_badge_container");
+          if (!badgeContainer) return;
+          if (newsText) {
+            badgeContainer.innerHTML = `
+              <div style="padding:10px 14px;background:#ef4444;color:#fff;font-weight:700;border-radius:999px;font-size:13px;box-shadow:0 4px 12px rgba(239,68,68,0.3);display:flex;align-items:center;gap:6px;font-family:Arial,sans-serif;">
+                <span style="width:8px;height:8px;border-radius:50%;background:#fff;display:inline-block;"></span>
+                <span>⚠️ \${newsText}</span>
+              </div>
+            `;
+          } else {
+            badgeContainer.innerHTML = `
+              <div style="padding:10px 14px;background:#22c55e;color:#fff;font-weight:700;border-radius:999px;font-size:13px;box-shadow:0 4px 12px rgba(34,197,94,0.2);display:flex;align-items:center;gap:6px;font-family:Arial,sans-serif;">
+                <span>🟢 News Clear</span>
+              </div>
+            `;
+          }
+        };
+
+        const mountWidget = () => {
+          if (!window.TradingView) {
+            showError("TradingView failed to load.");
+            return;
+          }
+
+          chartNode.innerHTML = "";
+          new window.TradingView.widget({
+            autosize: true,
+            symbol: "XAUUSD",
+            interval: "5",
+            timezone: "Asia/Kolkata",
+            theme: "dark",
+            style: "1",
+            locale: "en",
+            withdateranges: true,
+            hide_side_toolbar: false,
+            hide_top_toolbar: false,
+            allow_symbol_change: false,
+            details: true,
+            hotlist: false,
+            calendar: false,
+            studies: [],
+            container_id: "tv_chart_clean_XAUUSD_5"
+          });
+        };
+
+        fullscreenButton.onclick = () => {
+          if (!document.fullscreenElement) {
+            shell.requestFullscreen();
+          } else {
+            document.exitFullscreen();
+          }
+        };
+
+        // Connect WebSocket client
+        const connectWs = () => {
+          const wsUrl = `ws://127.0.0.1:8505/ws?symbol=\${encodeURIComponent("XAUUSD")}&timeframe=\${encodeURIComponent("5")}&session_id=\${encodeURIComponent("dummy-session-id")}`;
+          const socket = new WebSocket(wsUrl);
+
+          socket.onmessage = function(event) {
+            try {
+              const data = JSON.parse(event.data);
+              if (data && data.panelPayload) {
+                updatePanelContent(data.panelPayload);
+                updateNewsBadge(data.newsCountdown);
+              }
+            } catch (e) {
+              console.error("Error parsing ws update:", e);
+            }
+          };
+
+          socket.onclose = function() {
+            console.log("WebSocket closed, retrying in 2 seconds...");
+            setTimeout(connectWs, 2000);
+          };
+
+          socket.onerror = function() {
+            socket.close();
+          };
+        };
+
+        connectWs();
+
+        // Minimise functionality
+        const minimiseBtn = document.getElementById("tv_panel_clean_XAUUSD_5_minimise");
+        const panelContent = document.getElementById("tv_panel_clean_XAUUSD_5_content");
+        let isMinimised = false;
+        let originalHeight = "440px";
+
+        minimiseBtn.onclick = (e) => {
+          e.stopPropagation();
+          isMinimised = !isMinimised;
+          if (isMinimised) {
+            originalHeight = panel.style.height || "440px";
+            panelContent.style.display = "none";
+            panel.style.height = "48px";
+            panel.style.minHeight = "48px";
+            panel.style.resize = "none";
+            minimiseBtn.innerText = "+";
+            minimiseBtn.style.background = "rgba(255,255,255,0.3)";
+          } else {
+            panelContent.style.display = "block";
+            panel.style.height = originalHeight;
+            panel.style.minHeight = "200px";
+            panel.style.resize = "both";
+            minimiseBtn.innerText = "−";
+            minimiseBtn.style.background = "rgba(255,255,255,0.16)";
+          }
+        };
+
+        // Draggable functionality with boundaries
+        let dragging = false;
+        let offsetX = 0;
+        let offsetY = 0;
+        const dragHandle = document.getElementById("tv_panel_clean_XAUUSD_5_drag");
+        dragHandle.addEventListener('mousedown', (event) => {
+          dragging = true;
+          const rect = panel.getBoundingClientRect();
+          offsetX = event.clientX - rect.left;
+          offsetY = event.clientY - rect.top;
+          event.preventDefault();
+        });
+        document.addEventListener('mousemove', (event) => {
+          if (!dragging) return;
+          const wrapRect = shell.getBoundingClientRect();
+          const maxLeft = wrapRect.width - panel.offsetWidth - 12;
+          const maxTop = wrapRect.height - panel.offsetHeight - 12;
+          panel.style.left = `${Math.min(Math.max(12, event.clientX - wrapRect.left - offsetX), maxLeft)}px`;
+          panel.style.top = `${Math.min(Math.max(12, event.clientY - wrapRect.top - offsetY), maxTop)}px`;
+        });
+        document.addEventListener('mouseup', () => {
+          dragging = false;
+        });
+
+        let attempts = 0;
+        const loader = window.setInterval(() => {
+          attempts += 1;
+          if (window.TradingView) {
+            window.clearInterval(loader);
+            mountWidget();
+          } else if (attempts >= 40) {
+            window.clearInterval(loader);
+            showError("TradingView failed to load.");
+          }
+        }, 250);
+      </script>
+    </div>
