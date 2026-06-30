@@ -2051,22 +2051,12 @@ with st.container():
             index=strategies.index(st.session_state.get("selected_strategy", "Auto (Session-Aware)"))
         )
     with control_cols[3]:
-        # Synced Toggle for Live Analysis
-        live_toggle = st.toggle("Live Analysis", value=st.session_state.get("live_mode", False), key="live_toggle_widget")
-        if live_toggle != st.session_state.get("live_mode", False):
-            st.session_state.live_mode = live_toggle
-            if live_toggle:
-                st.session_state.analysis_running = True
-                st.session_state.analysis_status = "LIVE"
-                st.session_state.update_trigger_reason = "Live Analysis Enabled"
-            else:
-                st.session_state.analysis_running = False
-                st.session_state.analysis_status = "STOPPED"
-                st.session_state.update_trigger_reason = "Live Analysis Disabled"
-            st.rerun()
-
+        # Synced Toggle for Live Analysis (no custom state key to prevent lockups)
+        current_live_mode = st.session_state.get("live_mode", False)
+        live_toggle = st.toggle("Live Analysis", value=current_live_mode)
+        
         st.markdown("<div style='height: 5px;'></div>", unsafe_allow_html=True)
-        if st.session_state.get("live_mode", False):
+        if live_toggle:
             if st.button("Stop Analysis", type="secondary", use_container_width=True):
                 st.session_state.live_mode = False
                 st.session_state.analysis_running = False
@@ -2080,6 +2070,19 @@ with st.container():
                 st.session_state.analysis_status = "LIVE"
                 st.session_state.update_trigger_reason = "Manual Run"
                 st.rerun()
+
+        # If the toggle value itself changed directly by the user clicking the toggle widget
+        if live_toggle != current_live_mode:
+            st.session_state.live_mode = live_toggle
+            if live_toggle:
+                st.session_state.analysis_running = True
+                st.session_state.analysis_status = "LIVE"
+                st.session_state.update_trigger_reason = "Live Analysis Enabled"
+            else:
+                st.session_state.analysis_running = False
+                st.session_state.analysis_status = "STOPPED"
+                st.session_state.update_trigger_reason = "Live Analysis Disabled"
+            st.rerun()
 
 # Live Engine settings are auto-adjusted in the background
 adjust_live_engine_config(symbol, timeframe)

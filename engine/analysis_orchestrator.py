@@ -937,6 +937,7 @@ class AnalysisOrchestrator:
             "stop_loss":         bundle.signal.stop_loss,
             "tp1":               bundle.signal.tp1,
             "tp2":               bundle.signal.tp2,
+            "tp3":               getattr(bundle.signal, "tp3", 0.0),
             "rr_ratio":          bundle.signal.rr_ratio,
             "reasons":           bundle.signal.reasons,
             "warnings":          bundle.signal.warnings,
