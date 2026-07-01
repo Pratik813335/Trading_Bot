@@ -209,7 +209,7 @@ html = f"""
           }} catch (e) {{
               wsHost = window.location.hostname || "127.0.0.1";
           }}
-          const wsUrl = `ws://${{wsHost}}:8505/ws?symbol=\\${{encodeURIComponent("{symbol}")}}&timeframe=\\${{encodeURIComponent("{timeframe}")}}&session_id=\\${{encodeURIComponent("{session_id}")}}`;
+          const wsUrl = `ws://${{wsHost}}:8505/ws?symbol={symbol}&timeframe={timeframe}&session_id={session_id}`;
           const socket = new WebSocket(wsUrl);
 
           socket.onmessage = function(event) {{

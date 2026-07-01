@@ -185,7 +185,7 @@
           } catch (e) {
               wsHost = window.location.hostname || "127.0.0.1";
           }
-          const wsUrl = `ws://${wsHost}:8505/ws?symbol=\${encodeURIComponent("XAUUSD")}&timeframe=\${encodeURIComponent("5")}&session_id=\${encodeURIComponent("dummy-session-id")}`;
+          const wsUrl = `ws://${wsHost}:8505/ws?symbol=XAUUSD&timeframe=5&session_id=dummy-session-id`;
           const socket = new WebSocket(wsUrl);
 
           socket.onmessage = function(event) {

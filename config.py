@@ -52,6 +52,7 @@ GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash").strip()
 MT5_LOGIN = os.getenv("MT5_LOGIN", "").strip()
 MT5_PASSWORD = os.getenv("MT5_PASSWORD", "").strip()
 MT5_SERVER = os.getenv("MT5_SERVER", "").strip()
+MT5_PATH = os.getenv("MT5_PATH", "").strip()
 DATA_CSV_PATH = BASE_DIR / "data.csv"
 SIGNAL_HISTORY_PATH = BASE_DIR / "storage" / "signal_history.jsonl"
 NEWS_SIGNAL_HISTORY_PATH = BASE_DIR / "storage" / "news_signal_history.jsonl"

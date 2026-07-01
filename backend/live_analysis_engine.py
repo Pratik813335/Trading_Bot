@@ -495,8 +495,12 @@ def start_engine_api_server(orchestrator):
         server = uvicorn.Server(config)
         
         logger.info("Starting Starlette API and WebSocket server on port 8505...")
-        loop.run_until_complete(server.serve())
+        try:
+            loop.run_until_complete(server.serve())
+        except Exception as e:
+            logger.error(f"Uvicorn server crashed: {e}")
 
     t = threading.Thread(target=run_server, daemon=True)
     t.start()
+    time.sleep(0.3)  # Give uvicorn a moment to bind to the port and fail if occupied
     return t

@@ -1711,7 +1711,7 @@ def render_tradingview_widget(symbol, timeframe, bundle):
           }} catch (e) {{
               wsHost = window.location.hostname || "127.0.0.1";
           }}
-          const wsUrl = `ws://${{wsHost}}:8505/ws?symbol=\${{encodeURIComponent("{symbol}")}}&timeframe=\${{encodeURIComponent("{timeframe}")}}&session_id=\${{encodeURIComponent("{session_id}")}}`;
+          const wsUrl = `ws://${{wsHost}}:8505/ws?symbol={symbol}&timeframe={timeframe}&session_id={session_id}`;
           const socket = new WebSocket(wsUrl);
 
           socket.onmessage = function(event) {{
@@ -1935,7 +1935,7 @@ import urllib.parse
 
 from backend.live_analysis_engine import start_engine_api_server, live_analysis_manager
 
-@st.cache_resource
+@st.cache_resource(validate=lambda t: t.is_alive())
 def start_panel_api_server():
     container = _get_container_v2()
     orch = container["analysis_orchestrator"]
@@ -2156,7 +2156,51 @@ if st.session_state.live_mode:
     bundle = live_analysis_manager.get_latest_analysis(symbol, timeframe)
     
     if bundle is None:
-        st.info("⏳ Connecting to Live Analysis Engine and waiting for initial analysis from backend...")
+        t = start_panel_api_server()
+        if not t.is_alive():
+            st.error("❌ Live Analysis Engine failed to start (Port 8505 is already in use).")
+            
+            def find_port_8505_pid():
+                import subprocess
+                try:
+                    output = subprocess.check_output("netstat -ano", shell=True).decode("utf-8", errors="ignore")
+                    for line in output.splitlines():
+                        if ":8505" in line and "LISTENING" in line:
+                            parts = line.strip().split()
+                            if parts:
+                                return int(parts[-1])
+                except Exception:
+                    pass
+                return None
+
+            def get_process_name_by_pid(pid):
+                import subprocess
+                try:
+                    output = subprocess.check_output(f'tasklist /FI "PID eq {pid}"', shell=True).decode("utf-8", errors="ignore")
+                    for line in output.splitlines():
+                        if str(pid) in line:
+                            return line.strip().split()[0]
+                except Exception:
+                    pass
+                return "Unknown"
+
+            pid = find_port_8505_pid()
+            if pid:
+                name = get_process_name_by_pid(pid)
+                st.warning(f"Port 8505 is currently held by process **{name}** (PID: {pid}). This is likely an orphaned Streamlit/Python process from a previous run.")
+                if st.button("Terminate Process & Restart"):
+                    import subprocess
+                    try:
+                        subprocess.check_call(f"taskkill /F /PID {pid}", shell=True)
+                        st.success("Successfully terminated the orphaned process. Rerunning app...")
+                        st.cache_resource.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to terminate process: {e}")
+            else:
+                st.warning("Could not automatically locate the process holding port 8505. Please close any background python processes or run `Stop-Process -Id <PID>` in PowerShell.")
+        else:
+            st.info("⏳ Connecting to Live Analysis Engine and waiting for initial analysis from backend...")
         st.stop()
         
     st.session_state.analysis_bundle = bundle
